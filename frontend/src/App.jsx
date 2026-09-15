@@ -4,7 +4,7 @@ import PassModal from './components/PassModal'
 import { generateParkingSnapshot } from './utils/sampleImages'
 import { analyzeImageInBrowser } from './utils/browserVision'
 
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+const API_BASE = import.meta.env.VITE_API_BASE || 'https://ai-park-backend.onrender.com/api'
 
 const DEFAULT_SLOTS = [
   { slot_id: 'A01', section_id: 'A', status: 'AVAILABLE', priority: 1, distance_from_entries: 10, confidence: 0.98 },
@@ -585,16 +585,6 @@ export default function App() {
             </>
           ) : (
             <>
-              {/* LIVE CCTV STREAM VIEWPORT */}
-              <div className="scanner-viewport">
-                <img
-                  src={`${API_BASE}/camera/feed`}
-                  alt="Live CCTV Camera Feed"
-                  className="scanner-image-preview"
-                  style={{ maxHeight: 360, width: '100%', background: '#000' }}
-                />
-              </div>
-
               <div className="camera-mode-tabs">
                 <button
                   className={`tab-btn ${cameraMode === 'device' ? 'active' : ''}`}
