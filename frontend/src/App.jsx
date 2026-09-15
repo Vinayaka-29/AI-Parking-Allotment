@@ -18,6 +18,8 @@ export default function App() {
   const [events, setEvents] = useState([])
   const [activeTab, setActiveTab] = useState('upload') // 'upload' | 'stream'
   const [cameraActive, setCameraActive] = useState(false)
+  const [cameraMode, setCameraMode] = useState('device')
+  const [deviceCameraActive, setDeviceCameraActive] = useState(false)
   const [annotatedImage, setAnnotatedImage] = useState(null)
   const [isScanning, setIsScanning] = useState(false)
   const [telemetry, setTelemetry] = useState(null)
@@ -29,6 +31,8 @@ export default function App() {
   const [isCarBoosted, setIsCarBoosted] = useState(true)
 
   const fileInputRef = useRef(null)
+  const videoRef = useRef(null)
+  const deviceStreamRef = useRef(null)
 
   // Fetch initial data
   const fetchData = async () => {
@@ -60,7 +64,10 @@ export default function App() {
   useEffect(() => {
     fetchData()
     const interval = setInterval(fetchData, 4000)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      deviceStreamRef.current?.getTracks().forEach((track) => track.stop())
+    }
   }, [])
 
   // Handle uploaded image file
@@ -122,6 +129,59 @@ export default function App() {
     } catch (err) {
       console.error(err)
     }
+  }
+
+  const stopDeviceCamera = () => {
+    deviceStreamRef.current?.getTracks().forEach((track) => track.stop())
+    deviceStreamRef.current = null
+    if (videoRef.current) videoRef.current.srcObject = null
+    setDeviceCameraActive(false)
+    setStatusMsg('MOBILE CAMERA PAUSED (STANDBY)')
+  }
+
+  const toggleDeviceCamera = async () => {
+    if (deviceCameraActive) {
+      stopDeviceCamera()
+      return
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setStatusMsg('DEVICE CAMERA IS NOT AVAILABLE IN THIS BROWSER')
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      })
+      deviceStreamRef.current = stream
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        await videoRef.current.play()
+      }
+      setDeviceCameraActive(true)
+      setStatusMsg('MOBILE CAMERA LIVE (REAR CAMERA)')
+    } catch (err) {
+      console.error('Device camera error:', err)
+      setStatusMsg('CAMERA ACCESS DENIED OR UNAVAILABLE')
+    }
+  }
+
+  const scanDeviceCameraFrame = async () => {
+    const video = videoRef.current
+    if (!video || video.readyState < 2 || !video.videoWidth) {
+      setStatusMsg('START THE MOBILE CAMERA BEFORE SCANNING')
+      return
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height)
+    canvas.toBlob((blob) => {
+      if (blob) handleFileUpload(new File([blob], 'mobile-camera-frame.jpg', { type: 'image/jpeg' }))
+    }, 'image/jpeg', 0.88)
   }
 
   // Smart Slot Allocation
@@ -429,7 +489,72 @@ export default function App() {
                 />
               </div>
 
-              <div style={{ display: 'flex', gap: 10 }}>
+              <div className="camera-mode-tabs">
+                <button
+                  className={`tab-btn ${cameraMode === 'device' ? 'active' : ''}`}
+                  onClick={() => setCameraMode('device')}
+                >
+                  📱 MOBILE CAMERA
+                </button>
+                <button
+                  className={`tab-btn ${cameraMode === 'server' ? 'active' : ''}`}
+                  onClick={() => setCameraMode('server')}
+                >
+                  🖥️ SERVER CCTV
+                </button>
+              </div>
+
+              {cameraMode === 'device' ? (
+                <>
+                  <div className="scanner-viewport">
+                    <video
+                      ref={videoRef}
+                      className="scanner-image-preview"
+                      style={{ maxHeight: 360, width: '100%', background: '#000' }}
+                      autoPlay
+                      muted
+                      playsInline
+                    />
+                    {!deviceCameraActive && (
+                      <div className="dropzone-empty camera-prompt">
+                        <span className="dropzone-icon">📱</span>
+                        <div className="dropzone-text">
+                          <h4>Use your phone camera for live parking scans</h4>
+                          <p>Allow camera access, then scan a frame with AI detection</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <button
+                      className={`cyber-btn ${deviceCameraActive ? 'secondary' : 'primary'}`}
+                      style={{ flex: 1 }}
+                      onClick={toggleDeviceCamera}
+                    >
+                      {deviceCameraActive ? '⏸️ STOP MOBILE CAMERA' : '📱 START MOBILE CAMERA'}
+                    </button>
+                    <button
+                      className="cyber-btn secondary"
+                      style={{ flex: 1 }}
+                      onClick={scanDeviceCameraFrame}
+                      disabled={!deviceCameraActive || isScanning}
+                    >
+                      {isScanning ? '⏳ SCANNING...' : '🔎 SCAN CURRENT FRAME'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="scanner-viewport">
+                    <img
+                      src={`${API_BASE}/camera/feed`}
+                      alt="Live CCTV Camera Feed"
+                      className="scanner-image-preview"
+                      style={{ maxHeight: 360, width: '100%', background: '#000' }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 10 }}>
                 <button
                   className={`cyber-btn ${cameraActive ? 'secondary' : 'primary'}`}
                   style={{ flex: 1 }}
@@ -437,18 +562,16 @@ export default function App() {
                 >
                   {cameraActive ? '⏸️ PAUSE LIVE DETECTION' : '▶️ START LIVE SCANNING'}
                 </button>
-              </div>
+                  </div>
+                </>
+              )}
 
               <div className="telemetry-bar">
+                <span>Source: <strong>{cameraMode === 'device' ? 'MOBILE DEVICE CAMERA' : 'SERVER CCTV STREAM'}</strong></span>
                 <span>
-                  Source: <strong>WEBCAM / CCTV STREAM</strong>
+                  Status: <strong>{cameraMode === 'device' ? (deviceCameraActive ? 'LIVE PREVIEW' : 'STANDBY') : (cameraActive ? 'ACTIVE SCANNING' : 'STANDBY')}</strong>
                 </span>
-                <span>
-                  Status: <strong>{cameraActive ? 'ACTIVE SCANNING' : 'STANDBY'}</strong>
-                </span>
-                <span>
-                  Target FPS: <strong>25 FPS</strong>
-                </span>
+                <span>Target FPS: <strong>{cameraMode === 'device' ? 'DEVICE LIVE' : '25 FPS'}</strong></span>
               </div>
             </>
           )}
