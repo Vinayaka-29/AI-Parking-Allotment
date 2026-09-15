@@ -91,11 +91,7 @@ class ParkingStateManager:
         updated_slots = []
         for slot in self.slots.values():
             res = self.occupancy_engine.compute_slot_status(slot, detections, image_shape)
-            new_status = res["status"]
-            
-            if slot["status"] == "RESERVED" and new_status == "AVAILABLE":
-                new_status = "RESERVED"
-
+            new_status = res["status"]  # Pure visual ground truth: OCCUPIED or AVAILABLE
             self.update_slot_status(slot["slot_id"], new_status, res["confidence"])
             updated_slots.append(self.slots[slot["slot_id"]])
 
