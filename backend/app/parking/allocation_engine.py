@@ -8,17 +8,18 @@ class AllocationEngine:
         if not available_slots:
             raise ValueError("No available slots")
 
-        best_slot = min(
-            available_slots,
-            key=lambda slot: (
-                slot.get("distance_from_entries", 999),
-                -slot.get("priority", 0),
-            ),
-        )
+        def score(slot: dict[str, Any]) -> float:
+            distance = float(slot.get("distance_from_entries", 999))
+            distance_score = 1 / max(1, distance)
+            priority_score = min(1.0, float(slot.get("priority", 0)) / 5)
+            type_score = 1.0 if slot.get("type", "STANDARD").lower() in {vehicle_type.lower(), "standard"} else 0.0
+            return 0.55 * distance_score + 0.25 * priority_score + 0.20 * type_score
+
+        best_slot = max(available_slots, key=score)
 
         return {
             "slot_id": best_slot["slot_id"],
-            "score": round(1.0 / max(1.0, best_slot.get("distance_from_entries", 1)), 2),
+            "score": round(score(best_slot), 2),
             "reason": "Nearest available slot with priority match",
             "estimated_distance": best_slot.get("distance_from_entries", 0),
             "estimated_route": ["ENTRY", "LANE_2", best_slot["section_id"], best_slot["slot_id"]],

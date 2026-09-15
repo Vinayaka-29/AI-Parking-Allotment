@@ -58,6 +58,29 @@ h1 {
   font-size: 0.85rem;
 }
 
+.allocation-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.allocation-form input, .allocation-form button {
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(15, 23, 42, 0.8);
+  color: inherit;
+}
+
+.allocation-form button {
+  background: #2563eb;
+  border-color: #60a5fa;
+  cursor: pointer;
+}
+
+.allocation-form span { align-self: center; color: #a7f3d0; }
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -230,6 +253,9 @@ h1 {
   color: #a7f3d0;
   font-weight: 700;
 }
+
+.section-list { display: grid; gap: 8px; margin-top: 16px; }
+.section-list div { display: flex; justify-content: space-between; color: #cbd5e1; }
 
 @media (max-width: 900px) {
   .content-grid, .bottom-grid {

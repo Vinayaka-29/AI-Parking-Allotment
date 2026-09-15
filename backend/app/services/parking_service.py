@@ -4,12 +4,15 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.vision.occupancy import SlotOccupancyEngine
+
 from app.parking.state_manager import ParkingStateManager
 
 
 class ParkingService:
     def __init__(self) -> None:
         self.state_manager = ParkingStateManager()
+        self.occupancy_engine = SlotOccupancyEngine()
 
     def initialize_demo_state(self) -> None:
         config_path = Path(__file__).resolve().parents[3] / "configs" / "parking_layout.json"
@@ -37,6 +40,24 @@ class ParkingService:
 
     def allocate_slot(self, vehicle_id: str, vehicle_type: str = "car") -> dict[str, Any]:
         return self.state_manager.allocate_slot(vehicle_id, vehicle_type)
+
+    def update_occupancy(self, detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        updates = [
+            self.occupancy_engine.compute_slot_status(slot, detections)
+            for slot in self.state_manager.slots.values()
+        ]
+        self.state_manager.update_from_occupancy(updates)
+        return updates
+
+    def get_sections(self) -> list[dict[str, Any]]:
+        sections: dict[str, dict[str, Any]] = {}
+        for slot in self.state_manager.slots.values():
+            section = sections.setdefault(slot["section_id"], {"section_id": slot["section_id"], "total": 0, "available": 0, "occupied": 0, "reserved": 0, "unknown": 0})
+            section["total"] += 1
+            status = slot["status"].lower()
+            if status in section:
+                section[status] += 1
+        return list(sections.values())
 
 
 parking_service = ParkingService()
