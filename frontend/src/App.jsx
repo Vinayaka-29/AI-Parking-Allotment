@@ -3,7 +3,7 @@ import ThreeCarCanvas from './components/ThreeCarCanvas'
 import PassModal from './components/PassModal'
 import { generateParkingSnapshot } from './utils/sampleImages'
 
-const API_BASE = 'http://localhost:8000/api'
+const API_BASE = '/api'
 
 export default function App() {
   const [overview, setOverview] = useState({
