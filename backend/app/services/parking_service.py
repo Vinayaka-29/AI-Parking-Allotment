@@ -54,10 +54,8 @@ class ParkingService:
         # Update slot occupancy states
         self.state_manager.process_vision_detections(detections, image_shape=(h, w))
 
-        # Annotate image with slot polygons + vehicle bounding boxes
-        annotated_bgr = self.detector.annotate_frame(
-            frame_bgr, detections, self.state_manager.get_slots()
-        )
+        # Annotate image with real YOLO detected vehicle bounding boxes ONLY
+        annotated_bgr = self.detector.annotate_frame(frame_bgr, detections, slots=[])
         annotated_b64 = self.detector.encode_base64_jpeg(annotated_bgr)
         self.last_frame_annotated_b64 = annotated_b64
 
