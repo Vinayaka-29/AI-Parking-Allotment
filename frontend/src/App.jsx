@@ -6,24 +6,52 @@ function App() {
   const [overview, setOverview] = useState({ total_slots: 0, available: 0, occupied: 0, reserved: 0, unknown: 0, occupancy_pct: 0 })
   const [slots, setSlots] = useState([])
   const [events, setEvents] = useState([])
+  const [sections, setSections] = useState([])
+  const [allocation, setAllocation] = useState(null)
+  const [vehicleId, setVehicleId] = useState('')
 
   useEffect(() => {
     const load = async () => {
-      const [overviewRes, slotsRes, eventsRes] = await Promise.all([
+      const [overviewRes, slotsRes, eventsRes, sectionsRes] = await Promise.all([
         fetch(`${apiBase}/overview`),
         fetch(`${apiBase}/slots`),
         fetch(`${apiBase}/events`),
+        fetch(`${apiBase}/sections`),
       ])
 
       setOverview(await overviewRes.json())
       setSlots((await slotsRes.json()).slots)
       setEvents((await eventsRes.json()).events)
+      setSections((await sectionsRes.json()).sections)
     }
 
     load()
-    const timer = setInterval(load, 5000)
-    return () => clearInterval(timer)
+    const socket = new WebSocket('ws://localhost:8000/api/ws')
+    socket.onmessage = (message) => {
+      const update = JSON.parse(message.data)
+      if (update.event === 'SNAPSHOT') {
+        setOverview(update.overview)
+        setSlots(update.slots)
+      } else {
+        load()
+      }
+    }
+    return () => socket.close()
   }, [])
+
+  const allocate = async (event) => {
+    event.preventDefault()
+    if (!vehicleId.trim()) return
+    const response = await fetch(`${apiBase}/allocate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vehicle_id: vehicleId.trim() }),
+    })
+    if (response.ok) {
+      setAllocation(await response.json())
+      setVehicleId('')
+    }
+  }
 
   const mapRows = useMemo(() => {
     const grouped = {}
@@ -44,6 +72,12 @@ function App() {
         </div>
         <div className="status-pill">System healthy</div>
       </header>
+
+      <form className="allocation-form" onSubmit={allocate}>
+        <input value={vehicleId} onChange={(event) => setVehicleId(event.target.value)} placeholder="Vehicle/session ID" />
+        <button type="submit">Assign best slot</button>
+        {allocation && <span>{allocation.vehicle_id} → {allocation.slot_id}</span>}
+      </form>
 
       <section className="stats-grid">
         <div className="stat-card">
@@ -123,6 +157,9 @@ function App() {
             <div><label>Detection</label><span>READY</span></div>
             <div><label>Tracking</label><span>STABLE</span></div>
             <div><label>Occupancy</label><span>LIVE</span></div>
+          </div>
+          <div className="section-list">
+            {sections.map((section) => <div key={section.section_id}><label>Section {section.section_id}</label><span>{section.available}/{section.total} available</span></div>)}
           </div>
         </div>
       </section>
