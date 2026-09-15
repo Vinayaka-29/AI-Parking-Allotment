@@ -53,3 +53,4 @@ virtual environment is not required.
 ## Notes
 
 The detection layer is intentionally modular so it can be replaced with a YOLO model later without changing the parking intelligence layer.
+The project is maintained on the `main` branch.
