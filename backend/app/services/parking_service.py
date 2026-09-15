@@ -10,6 +10,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from app.vision.occupancy import SlotOccupancyEngine
+
 from app.parking.state_manager import ParkingStateManager
 from app.vision.detector import VehicleDetector
 

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from app.services.parking_service import parking_service
 
 router = APIRouter()
+connected_clients: set[WebSocket] = set()
 
 
 class AllocateRequest(BaseModel):
@@ -34,6 +35,27 @@ async def slots() -> dict:
     return {"slots": parking_service.get_slots()}
 
 
+@router.get("/sections")
+async def sections() -> dict:
+    return {"sections": parking_service.get_sections()}
+
+
+@router.get("/allocations")
+async def allocations() -> dict:
+    return {"allocations": parking_service.state_manager.get_allocations()}
+
+
+@router.get("/vehicles")
+async def vehicles() -> dict:
+    return {"vehicles": parking_service.state_manager.get_vehicles()}
+
+
+@router.get("/cameras")
+async def cameras() -> dict:
+    camera_ids = sorted({slot["camera_id"] for slot in parking_service.state_manager.slots.values()})
+    return {"cameras": [{"camera_id": camera_id, "status": "ONLINE"} for camera_id in camera_ids]}
+
+
 @router.get("/events")
 async def events() -> dict:
     return {"events": parking_service.get_recent_events()}
@@ -43,6 +65,7 @@ async def events() -> dict:
 async def allocate(payload: AllocateRequest) -> dict:
     try:
         result = parking_service.allocate_slot(payload.vehicle_id, payload.vehicle_type)
+        await broadcast({"event": "VEHICLE_ASSIGNED", **result})
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -104,6 +104,7 @@ class ParkingStateManager:
         return self.get_overview()
 
     def get_overview(self) -> dict[str, Any]:
+        self.expire_reservations()
         total = len(self.slots)
         available = sum(1 for slot in self.slots.values() if slot["status"] == "AVAILABLE")
         occupied = sum(1 for slot in self.slots.values() if slot["status"] == "OCCUPIED")

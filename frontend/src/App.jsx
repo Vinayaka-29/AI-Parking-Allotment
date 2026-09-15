@@ -588,6 +588,9 @@ export default function App() {
               <strong style={{ color: 'var(--neon-cyan)' }}>REAL-TIME (&lt;45ms)</strong>
             </div>
           </div>
+          <div className="section-list">
+            {sections.map((section) => <div key={section.section_id}><label>Section {section.section_id}</label><span>{section.available}/{section.total} available</span></div>)}
+          </div>
         </div>
       </section>
 
