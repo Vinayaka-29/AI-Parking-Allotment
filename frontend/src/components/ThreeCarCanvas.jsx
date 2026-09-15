@@ -76,7 +76,7 @@ export default function ThreeCarCanvas({ isRunning = true, carColor = '#00f0ff' 
         const size = bounds.getSize(new THREE.Vector3())
         const center = bounds.getCenter(new THREE.Vector3())
         const largestDimension = Math.max(size.x, size.y, size.z) || 1
-        const scale = 5.2 / largestDimension
+        const scale = 7 / largestDimension
 
         model.scale.setScalar(scale)
         model.position.set(-center.x * scale, -bounds.min.y * scale, -center.z * scale)
