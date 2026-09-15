@@ -14,6 +14,7 @@ export default function App() {
     occupancy_pct: 0,
   })
   const [slots, setSlots] = useState([])
+  const [sections, setSections] = useState([])
   const [events, setEvents] = useState([])
   const [activeTab, setActiveTab] = useState('upload') // 'upload' | 'stream'
   const [cameraActive, setCameraActive] = useState(false)
@@ -32,10 +33,11 @@ export default function App() {
   // Fetch initial data
   const fetchData = async () => {
     try {
-      const [ovRes, slRes, evRes] = await Promise.all([
+      const [ovRes, slRes, evRes, secRes] = await Promise.all([
         fetch(`${API_BASE}/overview`),
         fetch(`${API_BASE}/slots`),
         fetch(`${API_BASE}/events`),
+        fetch(`${API_BASE}/sections`),
       ])
       if (ovRes.ok) setOverview(await ovRes.json())
       if (slRes.ok) {
@@ -45,6 +47,10 @@ export default function App() {
       if (evRes.ok) {
         const evData = await evRes.json()
         setEvents(evData.events || [])
+      }
+      if (secRes.ok) {
+        const secData = await secRes.json()
+        setSections(secData.sections || [])
       }
     } catch (err) {
       console.warn('Backend polling error:', err)
