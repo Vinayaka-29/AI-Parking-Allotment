@@ -52,7 +52,7 @@ class VehicleDetector:
             logger.warning("Could not load YOLO model (%s). Will use simulated detector: %s", self.model_name, exc)
             self.model = None
 
-    def detect(self, frame: np.ndarray, conf_threshold: float = 0.25) -> list[VehicleDetection]:
+    def detect(self, frame: np.ndarray, conf_threshold: float = 0.15) -> list[VehicleDetection]:
         """Detect vehicles in an image frame (BGR format)."""
         if frame is None or frame.size == 0:
             return []
@@ -64,7 +64,7 @@ class VehicleDetector:
 
         if self.model is not None:
             try:
-                results = self.model.predict(source=frame, conf=conf_threshold, verbose=False)
+                results = self.model.predict(source=frame, conf=conf_threshold, imgsz=640, verbose=False)
                 if results and len(results) > 0:
                     first_result = results[0]
                     boxes = first_result.boxes
