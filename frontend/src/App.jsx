@@ -77,7 +77,7 @@ export default function App() {
     }
   }, [])
 
-  // Handle uploaded image file (Hybrid Cloud API + Browser AI Fallback)
+  // Handle uploaded image file (Prioritize Local/Cloud Python YOLOv8 -> Autonomous Browser Engine)
   const handleFileUpload = async (file) => {
     if (!file) return
     setIsScanning(true)
@@ -86,39 +86,53 @@ export default function App() {
     const formData = new FormData()
     formData.append('file', file)
 
-    try {
-      const res = await fetch(`${API_BASE}/detect/image`, {
-        method: 'POST',
-        body: formData,
-      })
-      if (!res.ok) throw new Error('API offline, activating autonomous in-browser vision engine')
+    const candidateUrls = [
+      'http://127.0.0.1:8000/api',
+      API_BASE,
+      '/api',
+    ]
 
-      const data = await res.json()
-      setAnnotatedImage(data.annotated_image)
-      setOverview(data.overview)
-      setSlots(data.slots)
-      setTelemetry({
-        detectedCount: data.total_detected_vehicles,
-        inferenceTime: data.inference_time_ms,
-        detections: data.detections,
-      })
-      setStatusMsg(`YOLOv8 SCAN COMPLETE: ${data.total_detected_vehicles} VEHICLES LOCATED (${data.inference_time_ms}ms)`)
-      fetchData()
-    } catch (err) {
-      console.warn('Backend unavailable, running autonomous in-browser vision engine:', err)
-      const data = await analyzeImageInBrowser(file)
-      setAnnotatedImage(data.annotated_image)
-      setOverview(data.overview)
-      setSlots(data.slots)
-      setTelemetry({
-        detectedCount: data.total_detected_vehicles,
-        inferenceTime: data.inference_time_ms,
-        detections: data.detections,
-      })
-      setStatusMsg(`YOLOv8 SCAN COMPLETE: ${data.total_detected_vehicles} VEHICLES LOCATED (${data.inference_time_ms}ms)`)
-    } finally {
-      setIsScanning(false)
+    let data = null
+    for (const baseUrl of candidateUrls) {
+      if (!baseUrl) continue
+      try {
+        const res = await fetch(`${baseUrl}/detect/image`, {
+          method: 'POST',
+          body: formData,
+        })
+        if (res.ok) {
+          data = await res.json()
+          break
+        }
+      } catch (e) {
+        // try next endpoint
+      }
     }
+
+    if (data) {
+      setAnnotatedImage(data.annotated_image)
+      setOverview(data.overview)
+      setSlots(data.slots)
+      setTelemetry({
+        detectedCount: data.total_detected_vehicles,
+        inferenceTime: data.inference_time_ms,
+        detections: data.detections,
+      })
+      setStatusMsg(`YOLOv8 SCAN COMPLETE: ${data.total_detected_vehicles} VEHICLES LOCATED (${data.inference_time_ms}ms)`)
+    } else {
+      console.warn('Backend unavailable, running autonomous in-browser vision engine...')
+      const browserData = await analyzeImageInBrowser(file)
+      setAnnotatedImage(browserData.annotated_image)
+      setOverview(browserData.overview)
+      setSlots(browserData.slots)
+      setTelemetry({
+        detectedCount: browserData.total_detected_vehicles,
+        inferenceTime: browserData.inference_time_ms,
+        detections: browserData.detections,
+      })
+      setStatusMsg(`YOLOv8 SCAN COMPLETE: ${browserData.total_detected_vehicles} VEHICLES LOCATED (${browserData.inference_time_ms}ms)`)
+    }
+    setIsScanning(false)
   }
 
   // Quick Preset Sample Generator

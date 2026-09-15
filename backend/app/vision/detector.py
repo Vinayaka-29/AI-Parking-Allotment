@@ -53,7 +53,7 @@ class VehicleDetector:
             self.model = None
 
     def detect(self, frame: np.ndarray, conf_threshold: float = 0.15) -> list[VehicleDetection]:
-        """Detect vehicles in an image frame (BGR format)."""
+        """Detect vehicles in an image frame (BGR format) using YOLOv8."""
         if frame is None or frame.size == 0:
             return []
 
@@ -71,7 +71,6 @@ class VehicleDetector:
                     if boxes is not None:
                         for box in boxes:
                             cls_id = int(box.cls[0].item()) if hasattr(box.cls[0], "item") else int(box.cls[0])
-                            # Check if detected class is a vehicle
                             if cls_id in VEHICLE_CLASS_IDS:
                                 conf = float(box.conf[0].item()) if hasattr(box.conf[0], "item") else float(box.conf[0])
                                 xyxy = box.xyxy[0].tolist() if hasattr(box.xyxy[0], "tolist") else list(box.xyxy[0])
@@ -93,97 +92,54 @@ class VehicleDetector:
         self,
         frame: np.ndarray,
         detections: list[VehicleDetection],
-        slots: list[dict[str, Any]],
+        slots: list[dict[str, Any]] | None = None,
     ) -> np.ndarray:
-        """Draw high-tech bounding boxes and glowing parking slots onto frame."""
+        """Draw accurate bounding boxes around detected vehicles with HUD telemetry."""
         annotated = frame.copy()
         h, w = annotated.shape[:2]
 
-        # Draw parking slots first
-        for slot in slots:
-            raw_poly = slot.get("polygon", [])
-            if not raw_poly or len(raw_poly) < 3:
-                continue
-
-            # Scale polygon if coordinates are relative (0..1) or absolute
-            poly_pts = []
-            for pt in raw_poly:
-                px = int(pt[0] * w) if 0 <= pt[0] <= 1.0 else int(pt[0])
-                py = int(pt[1] * h) if 0 <= pt[1] <= 1.0 else int(pt[1])
-                poly_pts.append([px, py])
-
-            pts_np = np.array([poly_pts], dtype=np.int32)
-            status = slot.get("status", "AVAILABLE")
-            slot_id = slot.get("slot_id", "SLOT")
-
-            # Colors: Green for AVAILABLE (0, 255, 157), Red for OCCUPIED (95, 42, 255 BGR)
-            if status == "AVAILABLE":
-                color = (157, 255, 0)       # BGR: Neon emerald green
-                fill_color = (100, 200, 0)
-            elif status == "RESERVED":
-                color = (0, 183, 255)       # BGR: Cyber amber
-                fill_color = (0, 140, 200)
-            else:
-                color = (95, 42, 255)       # BGR: Cyber Crimson Red
-                fill_color = (60, 20, 200)
-
-            # Draw transparent slot fill overlay
-            overlay = annotated.copy()
-            cv2.fillPoly(overlay, pts_np, fill_color)
-            cv2.addWeighted(overlay, 0.25, annotated, 0.75, 0, annotated)
-
-            # Draw glowing boundary
-            cv2.polylines(annotated, pts_np, isClosed=True, color=color, thickness=2)
-
-            # Slot label
-            cx = int(np.mean([p[0] for p in poly_pts]))
-            cy = int(np.mean([p[1] for p in poly_pts]))
-            label = f"{slot_id}: {status[:3]}"
-            cv2.putText(
-                annotated,
-                label,
-                (cx - 30, cy + 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 255, 255),
-                1,
-                cv2.LINE_AA,
-            )
-
-        # Draw detected vehicle bounding boxes
-        for det in detections:
+        # Draw detected vehicle bounding boxes directly where cars are located
+        for idx, det in enumerate(detections):
             bbox = det.bbox
             if len(bbox) < 4:
                 continue
             x1, y1, x2, y2 = [int(v) for v in bbox]
-            # Cyan box for detected vehicle
-            box_color = (255, 240, 0)  # BGR Cyan
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, 2)
+
+            # High-tech neon bounding box
+            color = (255, 0, 85) if idx % 2 == 0 else (0, 240, 255)  # Crimson / Cyan
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+
+            # Draw transparent box highlight
+            overlay = annotated.copy()
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+            cv2.addWeighted(overlay, 0.15, annotated, 0.85, 0, annotated)
 
             # Tag label background
             tag = f"AI {det.class_name.upper()} {int(det.confidence * 100)}%"
-            (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            cv2.rectangle(annotated, (x1, max(0, y1 - 20)), (x1 + tw + 6, max(20, y1)), box_color, -1)
+            (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
+            cv2.rectangle(annotated, (x1, max(0, y1 - 18)), (x1 + tw + 6, max(18, y1)), color, -1)
             cv2.putText(
                 annotated,
                 tag,
-                (x1 + 3, max(14, y1 - 5)),
+                (x1 + 3, max(13, y1 - 4)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
+                0.40,
                 (0, 0, 0),
                 1,
                 cv2.LINE_AA,
             )
 
         # Futuristic HUD Header banner
+        cv2.rectangle(annotated, (10, 10), (min(w - 10, 420), 44), (7, 10, 18), -1)
+        cv2.rectangle(annotated, (10, 10), (min(w - 10, 420), 44), (0, 240, 255), 1)
         cv2.putText(
             annotated,
-            f"AI-PARK VISION ENGINE | ACTIVE DETECTIONS: {len(detections)}",
-            (15, 25),
+            f"AI-PARK YOLOv8 | VEHICLES DETECTED: {len(detections)}",
+            (20, 32),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
+            0.50,
             (0, 255, 157),
-            2,
+            1,
             cv2.LINE_AA,
         )
 
@@ -191,7 +147,7 @@ class VehicleDetector:
 
     def encode_base64_jpeg(self, image: np.ndarray) -> str:
         """Encode OpenCV image to base64 JPEG data URL string."""
-        success, buffer = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        success, buffer = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 88])
         if not success:
             return ""
         encoded = base64.b64encode(buffer).decode("utf-8")
