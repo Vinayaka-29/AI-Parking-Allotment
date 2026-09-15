@@ -30,9 +30,24 @@ class ParkingStateManager:
                 "distance_from_entries": raw_slot.get("distance_from_entries", 0),
                 "confidence": 0.98,
                 "occupied_since": None,
+                "reserved_since": None,
                 "vehicle_id": None,
             }
             self.slots[slot["slot_id"]] = slot
+
+    def expire_reservations(self, max_minutes: int = 15) -> None:
+        """Expire old reservations if not claimed within timeout."""
+        now = datetime.now(timezone.utc)
+        for slot in self.slots.values():
+            if slot.get("status") == "RESERVED" and slot.get("reserved_since"):
+                try:
+                    res_time = datetime.fromisoformat(slot["reserved_since"])
+                    if (now - res_time).total_seconds() > (max_minutes * 60):
+                        slot["status"] = "AVAILABLE"
+                        slot["vehicle_id"] = None
+                        slot["reserved_since"] = None
+                except Exception:
+                    pass
 
     def update_slot_status(self, slot_id: str, status: str, confidence: float = 0.95, vehicle_id: str | None = None) -> None:
         if slot_id not in self.slots:
@@ -49,8 +64,12 @@ class ParkingStateManager:
 
         if status == "OCCUPIED":
             self.slots[slot_id]["occupied_since"] = now_str
+            self.slots[slot_id]["reserved_since"] = None
+        elif status == "RESERVED":
+            self.slots[slot_id]["reserved_since"] = now_str
         elif status == "AVAILABLE":
             self.slots[slot_id]["occupied_since"] = None
+            self.slots[slot_id]["reserved_since"] = None
 
         self.events.append({
             "event_id": f"EVT-{len(self.events) + 1:04d}",
@@ -71,11 +90,9 @@ class ParkingStateManager:
 
         updated_slots = []
         for slot in self.slots.values():
-            # If manually reserved and not yet expired, we can respect reservation unless car parked
             res = self.occupancy_engine.compute_slot_status(slot, detections, image_shape)
             new_status = res["status"]
             
-            # If it was reserved and no car detected, keep reserved
             if slot["status"] == "RESERVED" and new_status == "AVAILABLE":
                 new_status = "RESERVED"
 
@@ -123,12 +140,14 @@ class ParkingStateManager:
         }
 
     def get_slots(self) -> list[dict[str, Any]]:
+        self.expire_reservations()
         return list(self.slots.values())
 
     def get_recent_events(self) -> list[dict[str, Any]]:
         return self.events[-15:]
 
     def allocate_slot(self, vehicle_id: str, vehicle_type: str = "car") -> dict[str, Any]:
+        self.expire_reservations()
         candidate = None
         for slot in self.slots.values():
             if slot["status"] == "AVAILABLE":
