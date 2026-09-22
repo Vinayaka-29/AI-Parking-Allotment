@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Optional
-from fastapi import APIRouter, File, HTTPException, UploadFile
+import json
+from typing import Any, Optional
+from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -14,10 +15,52 @@ connected_clients: set[WebSocket] = set()
 class AllocateRequest(BaseModel):
     vehicle_id: str
     vehicle_type: str = "car"
+    preferred_slot: Optional[str] = None
 
 
 class CameraToggleRequest(BaseModel):
     active: Optional[bool] = None
+
+
+class LayoutCalibrationRequest(BaseModel):
+    slots: list[dict[str, Any]]
+    lot_name: Optional[str] = "Default Custom Lot"
+
+
+async def broadcast(message: dict) -> None:
+    """Broadcast JSON message to all connected WebSocket clients."""
+    dead_clients = set()
+    for ws in connected_clients:
+        try:
+            await ws.send_text(json.dumps(message))
+        except Exception:
+            dead_clients.add(ws)
+    connected_clients.difference_update(dead_clients)
+
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """Real-time WebSocket endpoint for slot status changes and occupancy events."""
+    await websocket.accept()
+    connected_clients.add(websocket)
+    try:
+        # Send initial status snapshot upon connection
+        await websocket.send_text(json.dumps({
+            "type": "INITIAL_SNAPSHOT",
+            "overview": parking_service.get_overview(),
+            "slots": parking_service.get_slots(),
+        }))
+        while True:
+            # Keep connection alive; handle potential client heartbeats
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+                if msg.get("type") == "PING":
+                    await websocket.send_text(json.dumps({"type": "PONG"}))
+            except Exception:
+                pass
+    except (WebSocketDisconnect, Exception):
+        connected_clients.discard(websocket)
 
 
 @router.get("/health")
@@ -64,11 +107,56 @@ async def events() -> dict:
 @router.post("/allocate")
 async def allocate(payload: AllocateRequest) -> dict:
     try:
-        result = parking_service.allocate_slot(payload.vehicle_id, payload.vehicle_type)
-        await broadcast({"event": "VEHICLE_ASSIGNED", **result})
+        # If preferred slot requested and available, assign it
+        if payload.preferred_slot and payload.preferred_slot in parking_service.state_manager.slots:
+            slot = parking_service.state_manager.slots[payload.preferred_slot]
+            if slot["status"] == "AVAILABLE":
+                parking_service.state_manager.update_slot_status(
+                    payload.preferred_slot, "RESERVED", 0.95, payload.vehicle_id
+                )
+                result = {
+                    "ticket_id": f"TKT-{hash(payload.vehicle_id) % 90000 + 10000}",
+                    "vehicle_id": payload.vehicle_id,
+                    "vehicle_type": payload.vehicle_type,
+                    "slot_id": payload.preferred_slot,
+                    "section_id": slot.get("section_id", "A"),
+                    "status": "RESERVED",
+                    "distance": slot.get("distance_from_entries", 10),
+                    "issued_at": parking_service.state_manager.last_analysis_time or "NOW",
+                }
+            else:
+                result = parking_service.allocate_slot(payload.vehicle_id, payload.vehicle_type)
+        else:
+            result = parking_service.allocate_slot(payload.vehicle_id, payload.vehicle_type)
+
+        await broadcast({
+            "type": "SLOT_STATUS_CHANGED",
+            "slot_id": result["slot_id"],
+            "status": "RESERVED",
+            "confidence": 0.95,
+        })
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/layout/calibrate")
+async def calibrate_layout(payload: LayoutCalibrationRequest) -> dict:
+    """Calibrate or update parking layout geometry."""
+    try:
+        config = {
+            "parking_lot": payload.lot_name or "Custom Calibrated Lot",
+            "slots": payload.slots,
+        }
+        parking_service.state_manager.load_layout(config)
+        await broadcast({
+            "type": "LAYOUT_CALIBRATED",
+            "slots_count": len(payload.slots),
+            "overview": parking_service.get_overview(),
+        })
+        return {"status": "success", "slots_count": len(payload.slots)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to calibrate layout: {str(exc)}") from exc
 
 
 @router.get("/system")
@@ -84,6 +172,12 @@ async def detect_image(file: UploadFile = File(...)) -> dict:
         if not content:
             raise HTTPException(status_code=400, detail="Empty image file received")
         result = parking_service.process_image_upload(content)
+        result["parking_spaces_detected"] = len(result.get("slots", [])) > 0
+        await broadcast({
+            "type": "DETECTION_COMPLETE",
+            "overview": result.get("overview"),
+            "inference_time_ms": result.get("inference_time_ms"),
+        })
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Image detection failed: {str(exc)}") from exc
@@ -92,7 +186,12 @@ async def detect_image(file: UploadFile = File(...)) -> dict:
 @router.post("/camera/toggle")
 async def toggle_camera(payload: CameraToggleRequest = CameraToggleRequest()) -> dict:
     """Start or stop the camera video feed & continuous AI scanning."""
-    return parking_service.toggle_camera(active=payload.active)
+    res = parking_service.toggle_camera(active=payload.active)
+    await broadcast({
+        "type": "CAMERA_STATUS_CHANGED",
+        "active": res["camera_active"],
+    })
+    return res
 
 
 @router.get("/camera/feed")
@@ -107,10 +206,20 @@ async def camera_feed():
 @router.post("/simulate/event")
 async def simulate_event() -> dict:
     """Trigger a simulated vehicle arrival or departure."""
-    return parking_service.simulate_random_event()
+    res = parking_service.simulate_random_event()
+    await broadcast({
+        "type": "SIMULATED_EVENT",
+        "overview": res,
+    })
+    return res
 
 
 @router.post("/simulate/reset")
 async def simulate_reset() -> dict:
     """Reset all parking bays to available."""
-    return parking_service.reset_slots()
+    res = parking_service.reset_slots()
+    await broadcast({
+        "type": "RESET_COMPLETE",
+        "overview": res,
+    })
+    return res
