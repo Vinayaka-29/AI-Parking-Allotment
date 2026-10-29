@@ -2,7 +2,7 @@ import { useCallback, useRef } from 'react'
 import { useParkingState } from '../context/ParkingContext'
 import { analyzeImageInBrowser } from '../utils/browserVision'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://ai-park-backend.onrender.com/api'
+const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 /**
  * Custom hook encapsulating the entire analysis workflow.
@@ -13,11 +13,7 @@ export function useParkingAnalysis() {
   const { state, dispatch } = useParkingState()
   const abortRef = useRef(null)
 
-  const candidateUrls = [
-    'http://127.0.0.1:8000/api',
-    API_BASE,
-    '/api',
-  ]
+  const candidateUrls = [...new Set([API_BASE, '/api', 'http://127.0.0.1:8000/api'])]
 
   /**
    * Upload an image and prepare it for analysis.
@@ -274,26 +270,38 @@ export function useParkingAnalysis() {
    * Re-analyze currently loaded image against a newly calibrated custom layout
    */
   const analyzeWithLayout = useCallback(async (customLayout) => {
-    if (!state.uploadedFile && !state.imagePreviewUrl) return
-    dispatch({ type: 'SET_ANALYZING' })
     try {
-      let fileToAnalyze = state.uploadedFile
-      if (!fileToAnalyze && state.imagePreviewUrl) {
-        const res = await fetch(state.imagePreviewUrl)
-        fileToAnalyze = await res.blob()
-      }
-      const browserData = await analyzeImageInBrowser(fileToAnalyze, customLayout)
-      dispatch({
-        type: 'SET_ANALYSIS_COMPLETE',
-        payload: browserData,
+      const response = await fetch(`${API_BASE}/layout/calibrate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lot_name: customLayout.lot_name, slots: customLayout.slots }),
       })
+      if (!response.ok) throw new Error(`Layout save failed (${response.status})`)
+
+      if (state.uploadedFile || state.imagePreviewUrl) {
+        const fileToAnalyze = state.uploadedFile || await (await fetch(state.imagePreviewUrl)).blob()
+        await analyzeImage(fileToAnalyze)
+      } else {
+        await fetchBackendData()
+      }
     } catch (err) {
       dispatch({
         type: 'SET_ANALYSIS_ERROR',
         payload: { message: `Layout analysis error: ${err.message}` },
       })
     }
-  }, [state.uploadedFile, state.imagePreviewUrl, dispatch])
+  }, [state.uploadedFile, state.imagePreviewUrl, dispatch, analyzeImage, fetchBackendData])
+
+  const analyzeLiveFrame = useCallback(async (file) => {
+    if (!file) return
+    const body = new FormData()
+    body.append('file', file, file.name || 'live-camera.jpg')
+    const response = await fetch(`${API_BASE}/detect/image`, { method: 'POST', body })
+    if (!response.ok) throw new Error(`Live frame analysis failed (${response.status})`)
+    const result = await response.json()
+    dispatch({ type: 'SET_ANALYSIS_COMPLETE', payload: result })
+    return result
+  }, [dispatch])
 
   /**
    * Remove a history entry
@@ -307,6 +315,7 @@ export function useParkingAnalysis() {
     analyzeImage,
     uploadAndAnalyze,
     analyzeWithLayout,
+    analyzeLiveFrame,
     clearAnalysis,
     retryAnalysis,
     fetchBackendData,

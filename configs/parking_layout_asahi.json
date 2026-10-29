@@ -1,0 +1,470 @@
+{
+  "parking_lot": "Asahi Parking Lot - Japan CCTV (CAM 945438)",
+  "camera_id": "CAM_ASAHI_JP",
+  "camera_url": "http://124.155.121.218:3000/webcapture.jpg?command=snap&channel=1",
+  "image_width": 1920,
+  "image_height": 1080,
+  "slots": [
+    {
+      "slot_id": "A01",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          845,
+          60
+        ],
+        [
+          931,
+          60
+        ],
+        [
+          931,
+          109
+        ],
+        [
+          845,
+          109
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 25.5
+    },
+    {
+      "slot_id": "A02",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          625,
+          82
+        ],
+        [
+          708,
+          82
+        ],
+        [
+          708,
+          129
+        ],
+        [
+          625,
+          129
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 20.3
+    },
+    {
+      "slot_id": "A03",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          522,
+          92
+        ],
+        [
+          609,
+          92
+        ],
+        [
+          609,
+          145
+        ],
+        [
+          522,
+          145
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 18.0
+    },
+    {
+      "slot_id": "A04",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          380,
+          101
+        ],
+        [
+          442,
+          101
+        ],
+        [
+          442,
+          158
+        ],
+        [
+          380,
+          158
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 14.3
+    },
+    {
+      "slot_id": "A05",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          339,
+          108
+        ],
+        [
+          394,
+          108
+        ],
+        [
+          394,
+          157
+        ],
+        [
+          339,
+          157
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 13.2
+    },
+    {
+      "slot_id": "A06",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          287,
+          92
+        ],
+        [
+          348,
+          92
+        ],
+        [
+          348,
+          175
+        ],
+        [
+          287,
+          175
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 12.0
+    },
+    {
+      "slot_id": "A07",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          266,
+          136
+        ],
+        [
+          325,
+          136
+        ],
+        [
+          325,
+          179
+        ],
+        [
+          266,
+          179
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 12.1
+    },
+    {
+      "slot_id": "A08",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          227,
+          140
+        ],
+        [
+          285,
+          140
+        ],
+        [
+          285,
+          183
+        ],
+        [
+          227,
+          183
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 11.1
+    },
+    {
+      "slot_id": "A09",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          1439,
+          106
+        ],
+        [
+          1619,
+          106
+        ],
+        [
+          1619,
+          215
+        ],
+        [
+          1439,
+          215
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 44.3
+    },
+    {
+      "slot_id": "A10",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          1545,
+          117
+        ],
+        [
+          1666,
+          117
+        ],
+        [
+          1666,
+          213
+        ],
+        [
+          1545,
+          213
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 46.4
+    },
+    {
+      "slot_id": "A11",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          1665,
+          125
+        ],
+        [
+          1841,
+          125
+        ],
+        [
+          1841,
+          218
+        ],
+        [
+          1665,
+          218
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 50.4
+    },
+    {
+      "slot_id": "A12",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          146,
+          156
+        ],
+        [
+          198,
+          156
+        ],
+        [
+          198,
+          201
+        ],
+        [
+          146,
+          201
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 9.4
+    },
+    {
+      "slot_id": "A13",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          1822,
+          208
+        ],
+        [
+          1920,
+          208
+        ],
+        [
+          1920,
+          305
+        ],
+        [
+          1822,
+          305
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 56.0
+    },
+    {
+      "slot_id": "A14",
+      "section_id": "A",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          0,
+          216
+        ],
+        [
+          99,
+          216
+        ],
+        [
+          99,
+          301
+        ],
+        [
+          0,
+          301
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 8.3
+    },
+    {
+      "slot_id": "B01",
+      "section_id": "B",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          1665,
+          192
+        ],
+        [
+          1920,
+          192
+        ],
+        [
+          1920,
+          399
+        ],
+        [
+          1665,
+          399
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 55.1
+    },
+    {
+      "slot_id": "B02",
+      "section_id": "B",
+      "camera_id": "CAM_ASAHI_JP",
+      "polygon": [
+        [
+          1785,
+          404
+        ],
+        [
+          1920,
+          404
+        ],
+        [
+          1920,
+          533
+        ],
+        [
+          1785,
+          533
+        ]
+      ],
+      "status": "UNKNOWN",
+      "type": "STANDARD",
+      "priority": 1,
+      "distance_from_entries": 61.5
+    }
+  ],
+  "entry_points": [
+    {
+      "entry_id": "ENTRY_01",
+      "x": 960,
+      "y": 1030
+    }
+  ],
+  "routes": [
+    {
+      "from": "ENTRY_01",
+      "to": "A01"
+    },
+    {
+      "from": "ENTRY_01",
+      "to": "A02"
+    },
+    {
+      "from": "ENTRY_01",
+      "to": "A03"
+    },
+    {
+      "from": "ENTRY_01",
+      "to": "A04"
+    },
+    {
+      "from": "ENTRY_01",
+      "to": "A05"
+    }
+  ]
+}

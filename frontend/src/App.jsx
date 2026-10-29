@@ -17,6 +17,7 @@ import ParkingCalibratorModal from './components/ParkingCalibratorModal'
 import DebugPanel from './components/DebugPanel'
 
 import { generateParkingSnapshot } from './utils/sampleImages'
+import { loadCalibratedLayout } from './utils/parkingSpaceDetector'
 
 function ParkingDashboard() {
   const { state, dispatch } = useParkingState()
@@ -25,6 +26,8 @@ function ParkingDashboard() {
     analyzeImage,
     uploadAndAnalyze,
     analyzeWithLayout,
+    analyzeLiveFrame,
+    fetchBackendData,
     clearAnalysis,
     allocateSlot,
     removeHistoryEntry,
@@ -36,7 +39,48 @@ function ParkingDashboard() {
   const [selectedSlot, setSelectedSlot] = useState(null)
   const [isAllocating, setIsAllocating] = useState(false)
   const [isCalibratorOpen, setIsCalibratorOpen] = useState(false)
+  const [cameraSnapshotUrl, setCameraSnapshotUrl] = useState('')
+  const [cameraLayoutSource, setCameraLayoutSource] = useState('BACKEND CONFIGURED')
   const hiddenFileInputRef = useRef(null)
+
+  useEffect(() => {
+    fetchBackendData()
+    const timer = window.setInterval(fetchBackendData, 10000)
+    return () => window.clearInterval(timer)
+  }, [fetchBackendData])
+
+  useEffect(() => {
+    fetch('/api/camera/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: state.cameraActive }),
+    }).catch((error) => console.warn('Camera service toggle failed:', error))
+  }, [state.cameraActive])
+
+  useEffect(() => {
+    let active = true
+    const savedLayout = loadCalibratedLayout()
+    if (savedLayout?.slots?.length) {
+      setCameraLayoutSource('LOCALSTORAGE CALIBRATED (SYNCED)')
+    }
+    fetch('/api/camera/info')
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => { if (active) setCameraSnapshotUrl(data?.camera?.source_url || '') })
+      .catch(() => {})
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    const savedLayout = loadCalibratedLayout()
+    if (!savedLayout?.slots?.length) return
+    fetch('/api/layout/calibrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lot_name: savedLayout.lot_name || 'Saved Camera Layout', slots: savedLayout.slots }),
+    }).then((response) => {
+      if (response.ok) fetchBackendData()
+    }).catch(() => {})
+  }, [fetchBackendData])
 
   // Current system clock
   const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString())
@@ -51,6 +95,10 @@ function ParkingDashboard() {
   const handleFileSelect = (file) => {
     if (!file) return
     uploadImage(file)
+  }
+
+  const handleSetCameraActive = (active) => {
+    dispatch({ type: 'SET_CAMERA_ACTIVE', payload: active })
   }
 
   // Handle run analysis
@@ -215,7 +263,7 @@ function ParkingDashboard() {
             onDemoClick={() => handleSampleDemo('half')}
             onCameraClick={() => {
               dispatch({ type: 'SET_ACTIVE_TAB', payload: 'stream' })
-              dispatch({ type: 'SET_CAMERA_ACTIVE', payload: true })
+              handleSetCameraActive(true)
             }}
           />
         ) : (
@@ -241,7 +289,10 @@ function ParkingDashboard() {
                 activeTab={state.activeTab}
                 setActiveTab={(tab) => dispatch({ type: 'SET_ACTIVE_TAB', payload: tab })}
                 cameraActive={state.cameraActive}
-                setCameraActive={(active) => dispatch({ type: 'SET_CAMERA_ACTIVE', payload: active })}
+                cameraSnapshotUrl={cameraSnapshotUrl}
+                cameraLayoutSource={cameraLayoutSource}
+                onLiveFrameAnalysis={analyzeLiveFrame}
+                setCameraActive={handleSetCameraActive}
                 deviceCameraActive={state.deviceCameraActive}
                 setDeviceCameraActive={(active) => dispatch({ type: 'SET_DEVICE_CAMERA_ACTIVE', payload: active })}
                 statusMsg={state.statusMsg}
@@ -291,7 +342,7 @@ function ParkingDashboard() {
       {/* Visual Calibrator Modal */}
       {isCalibratorOpen && (
         <ParkingCalibratorModal
-          imageUrl={state.imagePreviewUrl || state.annotatedImage}
+          imageUrl={state.imagePreviewUrl || state.annotatedImage || cameraSnapshotUrl}
           existingSlots={state.slots}
           onSaveLayout={handleSaveCalibratedLayout}
           onClose={() => setIsCalibratorOpen(false)}

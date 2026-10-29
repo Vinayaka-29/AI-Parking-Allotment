@@ -41,6 +41,26 @@ npm run dev -- --host 0.0.0.0 --port 5173
 The commands above install dependencies in the active system/user environments; a
 virtual environment is not required.
 
+## Validation and external benchmark
+
+Run the deterministic backend tests without contacting a camera:
+
+```bash
+cd backend
+PYTHONPATH=. python -m pytest -q
+```
+
+The Asahi CCTV check is an explicit external benchmark and is not collected by
+pytest. Run it only when access to that public camera is authorized:
+
+```bash
+cd backend
+PYTHONPATH=. python test_asahi_pipeline.py
+```
+
+Camera URLs, source types, and allowed frontend origins are configured through
+environment variables. Do not commit credentials or private camera URLs.
+
 ## API
 
 - GET /api/health

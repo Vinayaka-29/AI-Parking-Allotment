@@ -10,6 +10,8 @@ from app.services.parking_service import parking_service
 
 router = APIRouter()
 connected_clients: set[WebSocket] = set()
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 
 class AllocateRequest(BaseModel):
@@ -99,15 +101,34 @@ async def cameras() -> dict:
     return {"cameras": [{"camera_id": camera_id, "status": "ONLINE"} for camera_id in camera_ids]}
 
 
+@router.get("/camera/info")
+async def camera_info() -> dict:
+    """Return metadata for the live CCTV camera source."""
+    from app.services.parking_service import ASAHI_CAMERA_META
+    return {
+        "camera": ASAHI_CAMERA_META,
+        "active": parking_service.camera_active,
+        "fps": parking_service.camera_fps,
+        "source_name": parking_service.camera_source_name,
+        "status": parking_service.camera_status,
+        "last_frame_timestamp": parking_service.last_frame_timestamp,
+    }
+
+
 @router.get("/events")
 async def events() -> dict:
     return {"events": parking_service.get_recent_events()}
 
 
+
 @router.post("/allocate")
 async def allocate(payload: AllocateRequest) -> dict:
     try:
+        if not payload.vehicle_id.strip():
+            raise HTTPException(status_code=422, detail="vehicle_id must not be empty")
         # If preferred slot requested and available, assign it
+        if payload.preferred_slot and payload.preferred_slot not in parking_service.state_manager.slots:
+            raise HTTPException(status_code=400, detail="Unknown preferred slot")
         if payload.preferred_slot and payload.preferred_slot in parking_service.state_manager.slots:
             slot = parking_service.state_manager.slots[payload.preferred_slot]
             if slot["status"] == "AVAILABLE":
@@ -168,9 +189,13 @@ async def system() -> dict:
 async def detect_image(file: UploadFile = File(...)) -> dict:
     """Run real-time YOLOv8 vehicle detection & slot occupancy check on uploaded image."""
     try:
+        if file.content_type not in ALLOWED_IMAGE_TYPES:
+            raise HTTPException(status_code=415, detail="Only JPEG, PNG, and WebP images are supported")
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="Empty image file received")
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Image file exceeds the 10 MB limit")
         result = parking_service.process_image_upload(content)
         result["parking_spaces_detected"] = len(result.get("slots", [])) > 0
         await broadcast({
@@ -179,7 +204,9 @@ async def detect_image(file: UploadFile = File(...)) -> dict:
             "inference_time_ms": result.get("inference_time_ms"),
         })
         return result
-    except Exception as exc:
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=f"Image detection failed: {str(exc)}") from exc
 
 

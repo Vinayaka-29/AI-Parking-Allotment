@@ -19,6 +19,9 @@ export default function AIVisionCenter({
   activeTab,
   setActiveTab,
   cameraActive,
+  cameraSnapshotUrl,
+  cameraLayoutSource,
+  onLiveFrameAnalysis,
   setCameraActive,
   deviceCameraActive,
   setDeviceCameraActive,
@@ -27,7 +30,67 @@ export default function AIVisionCenter({
   const fileInputRef = useRef(null)
   const deviceVideoRef = useRef(null)
   const streamRef = useRef(null)
+  const cameraFrameBusyRef = useRef(false)
+  const lastCameraFrameAnalysisRef = useRef(0)
   const [dragOver, setDragOver] = useState(false)
+  const [cameraSnapshotOnline, setCameraSnapshotOnline] = useState(false)
+  const [cameraPixelsReadable, setCameraPixelsReadable] = useState(null)
+  const [snapshotRefresh, setSnapshotRefresh] = useState(Date.now())
+  const [cameraOverlayMode, setCameraOverlayMode] = useState('both')
+  const [cameraImageDimensions, setCameraImageDimensions] = useState(null)
+
+  // Some cameras accept browser image requests even when the backend cannot
+  // reach them. Poll the JPEG directly as a display fallback.
+  useEffect(() => {
+    if (!cameraActive) {
+      setCameraSnapshotOnline(false)
+      return
+    }
+
+    setCameraPixelsReadable(null)
+    const refreshTimer = window.setInterval(() => setSnapshotRefresh(Date.now()), 2000)
+    return () => {
+      window.clearInterval(refreshTimer)
+    }
+  }, [cameraActive])
+
+  const analyzeDirectCameraFrame = (event) => {
+    const image = event.currentTarget
+    if (cameraFrameBusyRef.current || !onLiveFrameAnalysis || !image.naturalWidth || !image.naturalHeight) return
+    if (Date.now() - lastCameraFrameAnalysisRef.current < 3000) return
+
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = image.naturalWidth
+      canvas.height = image.naturalHeight
+      canvas.getContext('2d').drawImage(image, 0, 0)
+      cameraFrameBusyRef.current = true
+      lastCameraFrameAnalysisRef.current = Date.now()
+      canvas.toBlob(async (blob) => {
+        try {
+          if (!blob) throw new Error('Could not encode live frame')
+          await onLiveFrameAnalysis(new File([blob], `live-camera-${Date.now()}.jpg`, { type: 'image/jpeg' }))
+          setCameraPixelsReadable(true)
+        } catch (error) {
+          setCameraPixelsReadable(false)
+          console.warn('Live CCTV frame analysis unavailable:', error)
+        } finally {
+          cameraFrameBusyRef.current = false
+        }
+      }, 'image/jpeg', 0.88)
+    } catch (error) {
+      cameraFrameBusyRef.current = false
+      setCameraPixelsReadable(false)
+      console.warn('Camera image blocks browser pixel access:', error)
+    }
+  }
+
+  const directSnapshotSrc = cameraSnapshotUrl
+    ? `${cameraSnapshotUrl}${cameraSnapshotUrl.includes('?') ? '&' : '?'}_=${snapshotRefresh}`
+    : ''
+  const showBays = cameraOverlayMode === 'bays' || cameraOverlayMode === 'both'
+  const showVehicles = cameraOverlayMode === 'vehicles' || cameraOverlayMode === 'both'
+  const visibleSource = cameraSnapshotOnline ? 'DIRECT SNAPSHOT + FRONTEND HUD' : 'BACKEND MJPEG (COMBINED)'
 
   // Manage Device Camera stream
   useEffect(() => {
@@ -187,40 +250,137 @@ export default function AIVisionCenter({
           <div className="stream-tab-pane">
             <div className="cctv-viewport">
               <div className="cctv-header-bar">
-                <div className="cam-meta">CAM-01 • SECTOR-A HIGH RES OVERHEAD</div>
+                <div className="cam-meta">
+                  📍 CAM-ASAHI-JP &nbsp;•&nbsp; Asahi Parking Lot, Chiba, Japan
+                  &nbsp;•&nbsp; Hi3516 · {cameraImageDimensions ? `${cameraImageDimensions.width}×${cameraImageDimensions.height}` : 'DIMENSIONS PENDING'}
+                </div>
                 <div className="cam-status">
                   <span className={`status-indicator ${cameraActive ? 'online' : 'offline'}`} />
-                  {cameraActive ? 'STREAMING 1080p @ 30FPS' : 'OFFLINE'}
+                  {cameraActive ? (cameraSnapshotOnline ? 'LIVE CAMERA SNAPSHOT' : 'CONNECTING TO CAMERA') : 'OFFLINE'}
                 </div>
               </div>
 
               {cameraActive ? (
                 <div className="cctv-active-frame">
+                  <div className="cctv-debug-toolbar">
+                    <span>LAYOUT: {cameraLayoutSource}</span>
+                    <span>VISIBLE: {visibleSource}</span>
+                    <div className="cctv-overlay-toggle" role="group" aria-label="Live overlay mode">
+                      {[
+                        ['bays', 'BAYS ONLY'],
+                        ['vehicles', 'VEHICLES ONLY'],
+                        ['both', 'BOTH'],
+                      ].map(([mode, label]) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          className={cameraOverlayMode === mode ? 'active' : ''}
+                          onClick={() => setCameraOverlayMode(mode)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Live MJPEG stream from backend — YOLO + slot overlays rendered server-side */}
+                  {directSnapshotSrc && (
+                    <img
+                      className="camera-source-probe"
+                      src={directSnapshotSrc}
+                      alt=""
+                      onLoad={() => setCameraSnapshotOnline(true)}
+                      onError={() => setCameraSnapshotOnline(false)}
+                    />
+                  )}
+                  {directSnapshotSrc && (
+                    <img
+                      className="camera-pixel-probe"
+                      crossOrigin="anonymous"
+                      src={directSnapshotSrc}
+                      alt=""
+                      onLoad={analyzeDirectCameraFrame}
+                      onError={() => setCameraPixelsReadable(false)}
+                    />
+                  )}
+                  {cameraSnapshotOnline ? (
+                    <>
+                      <img
+                        src={directSnapshotSrc}
+                        alt="Direct live Asahi parking camera snapshot"
+                        className="cctv-stream cctv-direct-snapshot"
+                        onLoad={(event) => setCameraImageDimensions({
+                          width: event.currentTarget.naturalWidth,
+                          height: event.currentTarget.naturalHeight,
+                        })}
+                        onError={() => setCameraSnapshotOnline(false)}
+                      />
+                      <img src="/api/camera/feed" alt="" className="camera-server-feed-probe" />
+                    </>
+                  ) : (
+                    <img
+                      src="/api/camera/feed"
+                      alt="Asahi parking camera connection status"
+                      className="cctv-stream"
+                      onLoad={(event) => setCameraImageDimensions({
+                        width: event.currentTarget.naturalWidth,
+                        height: event.currentTarget.naturalHeight,
+                      })}
+                    />
+                  )}
+                  {cameraSnapshotOnline && <svg className="live-camera-analysis-overlay" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid meet">
+                    {showBays && slots.map((slot) => {
+                      const polygon = slot.polygon || []
+                      if (polygon.length < 3) return null
+                      const points = polygon.map(([x, y]) => `${x <= 1 ? x * 1920 : x},${y <= 1 ? y * 1080 : y}`).join(' ')
+                      const color = slot.status === 'OCCUPIED' ? '#ff3159' : slot.status === 'RESERVED' ? '#ffbd32' : slot.status === 'UNKNOWN' ? '#9aa8ba' : '#20e88a'
+                      const [rawX, rawY] = polygon[0]
+                      const lx = rawX <= 1 ? rawX * 1920 : rawX
+                      const ly = rawY <= 1 ? rawY * 1080 : rawY
+                      return <g key={slot.slot_id}><polygon points={points} fill={`${color}30`} stroke={color} strokeWidth="3" /><text x={lx} y={ly - 6} fill="white" fontSize="24" stroke="#08111b" strokeWidth="5" paintOrder="stroke">{slot.slot_id}</text></g>
+                    })}
+                    {showVehicles && vehicles.map((vehicle, index) => {
+                      const [x1, y1, x2, y2] = vehicle.bbox || []
+                      if (![x1, y1, x2, y2].every(Number.isFinite)) return null
+                      return <g key={`camera-vehicle-${vehicle.tracking_id || index}`}><rect x={x1} y={y1} width={x2 - x1} height={y2 - y1} fill="rgba(0,240,255,.12)" stroke="#00f0ff" strokeWidth="4" /><text x={x1} y={Math.max(24, y1 - 8)} fill="#00f0ff" fontSize="24">{vehicle.class_name} {Math.round((vehicle.confidence || 0) * 100)}%</text></g>
+                    })}
+                  </svg>}
                   <div className="cctv-hud-grid" />
                   <div className="cctv-corner tl" />
                   <div className="cctv-corner tr" />
                   <div className="cctv-corner bl" />
                   <div className="cctv-corner br" />
                   <div className="cctv-center-target">
-                    <span>LIVE AI INFERENCE ENGINE STREAMING</span>
+                    <span>{cameraPixelsReadable === false ? 'CAMERA VISIBLE · BROWSER PIXEL ACCESS BLOCKED' : `${vehicles.length} YOLO VEHICLES · ASAHI JP CCTV`}</span>
+                  </div>
+                  {/* Slot badge */}
+                  <div className="viewport-hud-tag" style={{ bottom: '10px', top: 'auto' }}>
+                    <span className="dot pulse" />
+                    {slots.length > 0
+                      ? `${slots.length} CALIBRATED BAYS • ${occupiedCount} OCCUPIED • ${availableCount} FREE`
+                      : 'DETECTING PARKING SLOTS…'}
                   </div>
                 </div>
               ) : (
                 <div className="cctv-standby-screen">
                   <span className="standby-icon">📡</span>
-                  <h4>CCTV STREAM IN STANDBY</h4>
-                  <p>Click below to initialize high-throughput stream buffer.</p>
+                  <h4>ASAHI PARKING CCTV — STANDBY</h4>
+                  <p style={{ fontSize: '0.78rem', opacity: 0.7, margin: '4px 0 12px' }}>
+                    Real live camera · Asahi, Chiba, Japan (insecam #945438)<br />
+                    Hi3516 · 1920×1080 · Pull-mode JPEG @ 3 fps<br />
+                    YOLOv8-Nano with calibrated slot polygons
+                  </p>
                   <button
                     className="cyber-btn primary"
                     onClick={() => setCameraActive(true)}
                   >
-                    START LIVE RTSP FEED
+                    START LIVE ASAHI CCTV FEED
                   </button>
                 </div>
               )}
             </div>
           </div>
         )}
+
 
         {/* TAB 3: PHONE / WEBCAM */}
         {activeTab === 'device' && (
@@ -323,13 +483,13 @@ export default function AIVisionCenter({
             </button>
           )}
 
-          {imagePreviewUrl && onOpenCalibrator && (
+          {(imagePreviewUrl || (cameraActive && cameraSnapshotUrl)) && onOpenCalibrator && (
             <button
               id="calibrate-layout-btn"
               type="button"
               className="cyber-btn outline-accent"
               onClick={onOpenCalibrator}
-              title="Manually draw or adjust parking stall boundaries"
+              title="Manually draw or adjust parking stall boundaries on the current scene"
             >
               📐 CALIBRATE LAYOUT
             </button>

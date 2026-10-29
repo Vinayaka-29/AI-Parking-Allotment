@@ -1116,6 +1116,69 @@ body {
   align-items: center;
   justify-content: center;
 }
+.cctv-debug-toolbar {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 5px 8px;
+  background: rgba(7, 10, 18, 0.88);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+.cctv-overlay-toggle {
+  display: flex;
+  gap: 3px;
+  margin-left: auto;
+}
+.cctv-overlay-toggle button {
+  padding: 3px 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.cctv-overlay-toggle button.active {
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+  background: rgba(0, 240, 255, 0.16);
+}
+.cctv-stream {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.camera-source-probe,
+.camera-server-feed-probe,
+.camera-pixel-probe {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.camera-source-probe { left: 0; top: 0; }
+.camera-server-feed-probe { right: 0; bottom: 0; }
+.camera-pixel-probe { left: 1px; top: 0; }
+.live-camera-analysis-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  pointer-events: none;
+}
 .cctv-hud-grid {
   position: absolute;
   width: 100%;
@@ -1123,6 +1186,8 @@ body {
   background-image: linear-gradient(rgba(0, 240, 255, 0.04) 1px, transparent 1px),
                     linear-gradient(90deg, rgba(0, 240, 255, 0.04) 1px, transparent 1px);
   background-size: 40px 40px;
+  z-index: 3;
+  pointer-events: none;
 }
 
 .cctv-corner {
@@ -2498,4 +2563,3 @@ body {
   accent-color: var(--neon-cyan);
   cursor: pointer;
 }
-
