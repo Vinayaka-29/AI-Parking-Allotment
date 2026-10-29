@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useParkingState } from '../context/ParkingContext'
 
-const WS_BASE = import.meta.env.VITE_WS_BASE || 'ws://127.0.0.1:8000/api/ws'
+const WS_BASE = import.meta.env.VITE_WS_BASE || `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api/ws`
 
 /**
  * WebSocket hook for real-time parking updates.
@@ -32,6 +32,13 @@ export function useWebSocket() {
           const data = JSON.parse(event.data)
 
           switch (data.type) {
+            case 'INITIAL_SNAPSHOT':
+              dispatch({
+                type: 'SET_BACKEND_DATA',
+                payload: { overview: data.overview, slots: data.slots },
+              })
+              break
+
             case 'SLOT_STATUS_CHANGED':
               dispatch({
                 type: 'SLOT_STATUS_CHANGED',

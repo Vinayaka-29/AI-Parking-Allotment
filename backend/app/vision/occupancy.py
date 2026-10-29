@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import cv2
 import numpy as np
 
 
@@ -24,22 +25,21 @@ class SlotOccupancyEngine:
                 "occupancy_score": 0.0,
             }
 
-        # Convert slot polygon to absolute pixel coordinates if normalized (0..1)
         poly = []
         if image_shape:
             h, w = image_shape
+            ref_w, ref_h = slot.get("calibration_size") or [None, None]
             for pt in raw_poly:
-                px = pt[0] * w if 0 <= pt[0] <= 1.0 else pt[0]
-                py = pt[1] * h if 0 <= pt[1] <= 1.0 else pt[1]
+                px = pt[0] * w if 0 <= pt[0] <= 1.0 else pt[0] * w / ref_w if ref_w else pt[0]
+                py = pt[1] * h if 0 <= pt[1] <= 1.0 else pt[1] * h / ref_h if ref_h else pt[1]
                 poly.append([px, py])
         else:
             poly = raw_poly
 
-        # Calculate bounding box of the slot polygon: [sx1, sy1, sx2, sy2]
-        poly_xs = [p[0] for p in poly]
-        poly_ys = [p[1] for p in poly]
-        sx1, sy1, sx2, sy2 = min(poly_xs), min(poly_ys), max(poly_xs), max(poly_ys)
-        slot_area = max(1.0, (sx2 - sx1) * (sy2 - sy1))
+        poly_np = np.asarray(poly, dtype=np.float32)
+        poly_area = abs(cv2.contourArea(poly_np))
+        if poly_area <= 0:
+            return {"slot_id": slot["slot_id"], "status": "UNKNOWN", "confidence": 0.0, "occupancy_score": 0.0}
 
         best_score = 0.0
         best_conf = 0.0
@@ -51,22 +51,19 @@ class SlotOccupancyEngine:
 
             conf = getattr(det, "confidence", 0.0) if hasattr(det, "confidence") else det.get("confidence", 0.0)
 
-            # Intersection between slot bounding box and vehicle detection box
             vx1, vy1, vx2, vy2 = bbox
-            ix1 = max(sx1, vx1)
-            iy1 = max(sy1, vy1)
-            ix2 = min(sx2, vx2)
-            iy2 = min(sy2, vy2)
-
-            if ix2 > ix1 and iy2 > iy1:
-                intersection_area = (ix2 - ix1) * (iy2 - iy1)
-                vehicle_area = max(1.0, (vx2 - vx1) * (vy2 - vy1))
-                # Compute IoU / overlap ratio relative to slot
-                overlap_ratio = intersection_area / min(slot_area, vehicle_area)
-                score = overlap_ratio * conf
-                if score > best_score:
-                    best_score = score
-                    best_conf = conf
+            if vx2 <= vx1 or vy2 <= vy1:
+                continue
+            vehicle_poly = np.asarray([[vx1, vy1], [vx2, vy1], [vx2, vy2], [vx1, vy2]], dtype=np.float32)
+            try:
+                intersection_area, _ = cv2.intersectConvexConvex(poly_np, vehicle_poly)
+            except cv2.error:
+                continue
+            overlap_ratio = min(1.0, float(intersection_area) / poly_area)
+            score = overlap_ratio * float(conf)
+            if score > best_score:
+                best_score = score
+                best_conf = float(conf)
 
         is_occupied = best_score >= self.iou_threshold
         status = "OCCUPIED" if is_occupied else "AVAILABLE"

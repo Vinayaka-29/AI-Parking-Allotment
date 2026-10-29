@@ -15,14 +15,20 @@ export default function ParkingCalibratorModal({
   const [gridRows, setGridRows] = useState(2)
   const [gridCols, setGridCols] = useState(8)
   const [activeSection, setActiveSection] = useState('A')
+  const [imageBounds, setImageBounds] = useState(null)
 
   const containerRef = useRef(null)
+  const imageRef = useRef(null)
+  const hasEditedLayoutRef = useRef(false)
 
   // Load existing slots or previously saved calibrated layout
   useEffect(() => {
-    if (existingSlots && existingSlots.length > 0) {
-      setSlots(existingSlots)
-    } else {
+    if (!hasEditedLayoutRef.current && existingSlots && existingSlots.length > 0) {
+      setSlots(existingSlots.map((slot) => ({
+        ...slot,
+        polygon: (slot.polygon || []).map(([x, y]) => [x <= 1 ? x : x / 1920, y <= 1 ? y : y / 1080]),
+      })))
+    } else if (!hasEditedLayoutRef.current) {
       const saved = loadCalibratedLayout()
       if (saved && saved.slots && saved.slots.length > 0) {
         setSlots(saved.slots)
@@ -30,10 +36,24 @@ export default function ParkingCalibratorModal({
     }
   }, [existingSlots])
 
+  const updateImageBounds = () => {
+    const container = containerRef.current?.getBoundingClientRect()
+    const image = imageRef.current?.getBoundingClientRect()
+    if (!container || !image || !image.width || !image.height) return
+    setImageBounds({ left: image.left - container.left, top: image.top - container.top, width: image.width, height: image.height })
+  }
+
+  useEffect(() => {
+    updateImageBounds()
+    const observer = new ResizeObserver(updateImageBounds)
+    if (containerRef.current) observer.observe(containerRef.current)
+    return () => observer.disconnect()
+  }, [imageUrl])
+
   // Get normalized coordinates (0..1) from mouse event
   const getNormalizedPoint = (e) => {
-    if (!containerRef.current) return [0, 0]
-    const rect = containerRef.current.getBoundingClientRect()
+    if (!imageRef.current) return [0, 0]
+    const rect = imageRef.current.getBoundingClientRect()
     const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
     const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height))
     return [+(x).toFixed(4), +(y).toFixed(4)]
@@ -42,6 +62,8 @@ export default function ParkingCalibratorModal({
   // Mouse Handlers for Drawing New Slot Box
   const handleMouseDown = (e) => {
     if (e.target.closest('.slot-del-tag')) return
+    const bounds = imageRef.current?.getBoundingClientRect()
+    if (!bounds || e.clientX < bounds.left || e.clientX > bounds.right || e.clientY < bounds.top || e.clientY > bounds.bottom) return
     const pt = getNormalizedPoint(e)
     setIsDrawing(true)
     setStartPoint(pt)
@@ -70,6 +92,7 @@ export default function ParkingCalibratorModal({
 
     // Ignore tiny accidental clicks (must be at least 2% of dimension)
     if (w > 0.02 && h > 0.02) {
+      hasEditedLayoutRef.current = true
       const nextIndex = slots.length + 1
       const slotId = `${activeSection}${String(nextIndex).padStart(2, '0')}`
 
@@ -100,6 +123,7 @@ export default function ParkingCalibratorModal({
 
   // Quick Auto-Grid Generation
   const handleGenerateGrid = () => {
+    hasEditedLayoutRef.current = true
     const newSlots = []
     const rows = Math.max(1, gridRows)
     const cols = Math.max(1, gridCols)
@@ -154,6 +178,7 @@ export default function ParkingCalibratorModal({
 
   // Delete slot
   const handleDeleteSlot = (id) => {
+    hasEditedLayoutRef.current = true
     setSlots(prev => prev.filter(s => (s.slot_id || s.id) !== id))
     if (selectedSlotId === id) setSelectedSlotId(null)
   }
@@ -245,7 +270,7 @@ export default function ParkingCalibratorModal({
             <button
               type="button"
               className="cyber-btn ghost-compact"
-              onClick={() => setSlots([])}
+              onClick={() => { hasEditedLayoutRef.current = true; setSlots([]) }}
             >
               🗑️ CLEAR
             </button>
@@ -266,17 +291,24 @@ export default function ParkingCalibratorModal({
         >
           {imageUrl ? (
             <img
+              ref={imageRef}
               src={imageUrl}
               alt="Parking Lot Scene for Calibration"
               className="calibrator-image"
               draggable={false}
+              onLoad={updateImageBounds}
             />
           ) : (
             <div className="calibrator-no-image">NO IMAGE LOADED</div>
           )}
 
           {/* SVG Overlay for existing slots and current drawing box */}
-          <svg className="calibrator-svg-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+          <svg
+            className="calibrator-svg-overlay"
+            viewBox="0 0 1000 1000"
+            preserveAspectRatio="none"
+            style={imageBounds ? { left: imageBounds.left, top: imageBounds.top, width: imageBounds.width, height: imageBounds.height } : undefined}
+          >
             {slots.map((slot) => {
               const poly = slot.polygon || []
               if (poly.length < 3) return null
