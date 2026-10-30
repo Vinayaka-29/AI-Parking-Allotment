@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # SNAPSHOT = JPEG pull-mode camera (fetches a new image at camera_fps intervals)
     # URL       = MJPEG stream (continuous multipart stream)
     camera_source: str = "SNAPSHOT"
+    camera_id: str = "CAM_ASAHI_JP"
     camera_url: str = "http://124.155.121.218:3000/webcapture.jpg?command=snap&channel=1"
     camera_fps: int = 3          # Processing FPS for live mode
     camera_enabled: bool = True  # Master switch for live camera
@@ -24,6 +25,9 @@ class Settings(BaseSettings):
     detect_tile_overlap: float = 0.20
     detect_fullframe: bool = False
     occupancy_votes: int = 3
+    calib_cycles: int = 40
+    calib_min_parked: int = 3
+    scene_check_interval_s: float = 30.0
 
     # Parking layout selection (without extension).
     # The backend looks for configs/parking_layout_{parking_layout}.json first,

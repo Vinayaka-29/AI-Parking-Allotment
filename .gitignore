@@ -7,4 +7,6 @@ __pycache__/
 node_modules/
 frontend/dist/
 backend/.pytest_cache/
+backend/data/*
+!backend/data/.gitkeep
 *.pt
