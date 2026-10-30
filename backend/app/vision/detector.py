@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 VEHICLE_CLASS_IDS = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
 
+class DetectorInferenceError(RuntimeError):
+    """Raised when YOLO cannot provide a trustworthy result."""
+
+
 @dataclass
 class VehicleDetection:
     tracking_id: int | None = None
@@ -41,15 +45,21 @@ class VehicleDetector:
         self.camera_id = camera_id
         self.model_name = model_name
         self.model = None
+        self.detector_status = "INITIALIZING"
+        self.last_error: str | None = None
         self._load_model()
 
     def _load_model(self) -> None:
         try:
             from ultralytics import YOLO
             self.model = YOLO(self.model_name)
+            self.detector_status = "READY"
+            self.last_error = None
             logger.info("Successfully loaded YOLO model: %s", self.model_name)
         except Exception as exc:
-            logger.warning("Could not load YOLO model (%s). Will use simulated detector: %s", self.model_name, exc)
+            self.detector_status = "FAILED"
+            self.last_error = str(exc)
+            logger.error("Could not load YOLO model (%s): %s", self.model_name, exc)
             self.model = None
 
     def detect(self, frame: np.ndarray, conf_threshold: float = 0.12) -> list[VehicleDetection]:
@@ -63,6 +73,8 @@ class VehicleDetector:
 
         if self.model is None:
             self._load_model()
+        if self.model is None:
+            raise DetectorInferenceError(self.last_error or "YOLO model is unavailable")
 
         detections: list[VehicleDetection] = []
 
@@ -91,7 +103,10 @@ class VehicleDetector:
                                     )
                                 )
             except Exception as exc:
+                self.detector_status = "FAILED"
+                self.last_error = str(exc)
                 logger.error("YOLO detection error: %s", exc)
+                raise DetectorInferenceError(str(exc)) from exc
 
         return detections
 
