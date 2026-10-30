@@ -6,8 +6,9 @@ import numpy as np
 
 
 class SlotOccupancyEngine:
-    def __init__(self, iou_threshold: float = 0.20) -> None:
+    def __init__(self, iou_threshold: float = 0.30, min_confidence: float = 0.25) -> None:
         self.iou_threshold = iou_threshold
+        self.min_confidence = min_confidence
 
     def compute_slot_status(
         self,
@@ -15,13 +16,13 @@ class SlotOccupancyEngine:
         detections: list[Any],
         image_shape: tuple[int, int] | None = None,
     ) -> dict[str, Any]:
-        """Determine if a slot is OCCUPIED or AVAILABLE based on vehicle detections."""
+        """Determine occupancy from a vehicle anchor point or area overlap."""
         raw_poly = slot.get("polygon", [])
         if not raw_poly or len(raw_poly) < 3:
             return {
                 "slot_id": slot["slot_id"],
-                "status": slot.get("status", "AVAILABLE"),
-                "confidence": 0.95,
+                "status": "UNKNOWN",
+                "confidence": 0.0,
                 "occupancy_score": 0.0,
             }
 
@@ -51,6 +52,9 @@ class SlotOccupancyEngine:
 
             conf = getattr(det, "confidence", 0.0) if hasattr(det, "confidence") else det.get("confidence", 0.0)
 
+            conf = float(conf)
+            if conf < self.min_confidence:
+                continue
             vx1, vy1, vx2, vy2 = bbox
             if vx2 <= vx1 or vy2 <= vy1:
                 continue
@@ -59,11 +63,15 @@ class SlotOccupancyEngine:
                 intersection_area, _ = cv2.intersectConvexConvex(poly_np, vehicle_poly)
             except cv2.error:
                 continue
-            overlap_ratio = min(1.0, float(intersection_area) / poly_area)
-            score = overlap_ratio * float(conf)
+            bbox_area = float((vx2 - vx1) * (vy2 - vy1))
+            overlap_ratio = min(1.0, float(intersection_area) / min(poly_area, bbox_area)) if bbox_area else 0.0
+            anchor_x = (vx1 + vx2) / 2.0
+            anchor_y = vy2 - ((vy2 - vy1) * 0.15)
+            anchor_inside = cv2.pointPolygonTest(poly_np, (anchor_x, anchor_y), False) >= 0
+            score = max(overlap_ratio, 1.0 if anchor_inside else 0.0)
             if score > best_score:
                 best_score = score
-                best_conf = float(conf)
+                best_conf = conf
 
         is_occupied = best_score >= self.iou_threshold
         status = "OCCUPIED" if is_occupied else "AVAILABLE"
