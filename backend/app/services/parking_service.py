@@ -61,7 +61,10 @@ class ParkingService:
         """Migrate/load only the confirmed profile belonging to the active camera."""
         base = Path(__file__).resolve().parents[3] / "configs"
         candidate = base / "parking_layout_asahi.json"
-        profile = self.profile_store.migrate_layout(self.camera.camera_id, self.camera.url, candidate)
+        if self.camera.camera_id == "CAM_ASAHI_JP":
+            profile = self.profile_store.migrate_layout(self.camera.camera_id, self.camera.url, candidate)
+        else:
+            profile = self.profile_store.load_validated(self.camera.camera_id, self.camera.url)
         self._apply_profile(profile)
 
     def _apply_profile(self, profile: dict[str, Any] | None) -> None:
