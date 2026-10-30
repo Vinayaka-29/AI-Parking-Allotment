@@ -83,7 +83,11 @@ class AutoCalibrator:
 
     def _build_proposal(self, frame: np.ndarray) -> dict[str, Any]:
         height, width = frame.shape[:2]
-        parked = [track for track in self.tracks if track.hits / max(track.cycles_seen, 1) >= 0.70]
+        parked = [
+            track for track in self.tracks
+            if track.hits / max(track.cycles_seen, 1) >= 0.70
+            and self._is_stationary(track, width, height)
+        ]
         if len(parked) < self.min_parked:
             return {
                 "status": "NEEDS_MORE_DATA",
@@ -167,6 +171,14 @@ class AutoCalibrator:
         }
 
     @staticmethod
+    def _is_stationary(track: _Track, width: int, height: int) -> bool:
+        centers = np.asarray([[(box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0] for box in track.history])
+        if len(centers) < 2:
+            return True
+        spread = np.max(np.abs(centers - np.median(centers, axis=0)), axis=0)
+        return bool(spread[0] <= max(5.0, width * 0.01) and spread[1] <= max(5.0, height * 0.01))
+
+    @staticmethod
     def _polygon_iou(first: list[list[float]], second: list[list[float]]) -> float:
         first_np, second_np = np.asarray(first, dtype=np.float32), np.asarray(second, dtype=np.float32)
         first_area, second_area = abs(cv2.contourArea(first_np)), abs(cv2.contourArea(second_np))
@@ -174,4 +186,3 @@ class AutoCalibrator:
             return 0.0
         intersection, _ = cv2.intersectConvexConvex(first_np, second_np)
         return float(intersection) / (first_area + second_area - float(intersection))
-
