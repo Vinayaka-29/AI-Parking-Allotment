@@ -15,7 +15,9 @@ from PIL import Image
 from app.vision.occupancy import SlotOccupancyEngine
 from app.parking.state_manager import ParkingStateManager
 from app.vision.detector import VehicleDetector
-from app.vision.camera_sources import SnapshotCameraSource, OpenCVCameraSource, VideoFrame
+from app.vision.camera_sources import SnapshotCameraSource, OpenCVCameraSource, VideoFrame, CameraSource
+from app.vision.camera_worker import CameraWorker
+from app.vision.detection_worker import DetectionWorker
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,8 @@ ASAHI_CAMERA_META = {
 class ParkingService:
     def __init__(self) -> None:
         self.state_manager = ParkingStateManager()
-        self.detector = VehicleDetector(model_name="yolov8n.pt", camera_id="CAM_ASAHI_JP")
+        self.state_manager.occupancy_votes_required = self._settings.occupancy_votes if hasattr(self, "_settings") else 3
+        self.detector = VehicleDetector(model_name=settings.detect_model, camera_id="CAM_ASAHI_JP")
         self.camera_active: bool = False
         self._cam_source: Optional[SnapshotCameraSource | OpenCVCameraSource] = None
         self.last_frame_annotated_b64: str | None = None
@@ -45,6 +48,9 @@ class ParkingService:
         self.camera_status: str = "OFFLINE"
         self.last_frame_timestamp: str | None = None
         self._settings = settings
+        self._camera_worker: CameraWorker | None = None
+        self._detection_worker: DetectionWorker | None = None
+        self._stream_placeholder: bytes | None = None
 
     # ─── Layout loading ────────────────────────────────────────────────────────
 
@@ -68,60 +74,77 @@ class ParkingService:
 
     # ─── Camera initialisation ─────────────────────────────────────────────────
 
+    def _create_camera_source(self) -> CameraSource:
+        source = self._settings.camera_source.upper()
+        url = self._settings.camera_url
+        if source == "SNAPSHOT":
+            return SnapshotCameraSource(url=url, camera_id="CAM_ASAHI_JP")
+        if source == "WEBCAM":
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                cap.release()
+                raise RuntimeError("Webcam not available")
+            return _CVCapWrapper(cap, "WEBCAM")
+        if source in ("URL", "RTSP"):
+            cap = cv2.VideoCapture(url)
+            if not cap.isOpened():
+                cap.release()
+                raise RuntimeError(f"Cannot open stream: {url}")
+            return _CVCapWrapper(cap, f"URL: {url}")
+        if source == "FILE":
+            if not url or not Path(url).exists():
+                raise RuntimeError(f"Camera file not found: {url}")
+            cap = cv2.VideoCapture(url)
+            if not cap.isOpened():
+                cap.release()
+                raise RuntimeError(f"Cannot open camera file: {url}")
+            return _CVCapWrapper(cap, f"FILE: {url}")
+        raise RuntimeError(f"Unsupported camera source: {source}")
+
+    def _start_workers(self) -> None:
+        if self._camera_worker and self._detection_worker:
+            self._camera_worker.start()
+            self._detection_worker.start()
+            return
+        source = self._settings.camera_source.upper()
+        if source == "SAMPLE" or not self._settings.camera_enabled:
+            self.camera_source_name = "SAMPLE / SIMULATED"
+            return
+        self._camera_worker = CameraWorker(
+            self._create_camera_source,
+            fetch_interval_s=self._settings.camera_fetch_interval_s,
+            stale_after_s=self._settings.camera_stale_after_s,
+            camera_id="CAM_ASAHI_JP",
+        )
+        self._detection_worker = DetectionWorker(
+            self._camera_worker,
+            self.detector,
+            self.state_manager,
+            interval_s=self._settings.detect_interval_s,
+            conf_threshold=self._settings.detect_conf,
+            tiles=self._settings.detect_tiles,
+            tile_overlap=self._settings.detect_tile_overlap,
+            full_frame=self._settings.detect_fullframe,
+        )
+        self.camera_source_name = f"{source}: Asahi Parking Lot, Japan"
+        self._camera_worker.start()
+        self._detection_worker.start()
+
+    def _stop_workers(self) -> None:
+        if self._detection_worker:
+            self._detection_worker.stop()
+        if self._camera_worker:
+            self._camera_worker.stop()
+        self._detection_worker = None
+        self._camera_worker = None
+
     def _initialize_camera_source(self) -> bool:
-        """Initialise the camera source based on settings."""
+        """Validate settings and prepare the worker-owned camera source."""
         try:
-            self._release_cam_source()
-
-            source = self._settings.camera_source.upper()
-            url = self._settings.camera_url
-
-            if source == "SNAPSHOT":
-                # Pull-mode JPEG endpoint — works with Hi3516 cameras like the Asahi lot
-                self._cam_source = SnapshotCameraSource(
-                    url=url,
-                    camera_id="CAM_ASAHI_JP",
-                )
-                self.camera_source_name = f"SNAPSHOT: Asahi Parking Lot, Japan"
-                logger.info("Snapshot camera source initialised: %s", url)
-                return True
-
-            elif source == "WEBCAM":
-                cap = cv2.VideoCapture(0)
-                if not cap.isOpened():
-                    logger.error("Webcam not available")
-                    return False
-                # Wrap in a simple OpenCVCameraSource-compatible object
-                self._cam_source = _CVCapWrapper(cap, "WEBCAM")
-                self.camera_source_name = "WEBCAM"
-                return True
-
-            elif source in ("URL", "RTSP"):
-                cap = cv2.VideoCapture(url)
-                if not cap.isOpened():
-                    logger.error("Cannot open stream: %s", url)
-                    return False
-                self._cam_source = _CVCapWrapper(cap, f"URL: {url}")
-                self.camera_source_name = f"URL: {url}"
-                return True
-
-            elif source == "FILE":
-                if not url or not Path(url).exists():
-                    logger.error("Camera file not found: %s", url)
-                    return False
-                cap = cv2.VideoCapture(url)
-                self._cam_source = _CVCapWrapper(cap, f"FILE: {url}")
-                self.camera_source_name = f"FILE: {url}"
-                return True
-
-            else:  # SAMPLE or unknown
-                self._cam_source = None
-                self.camera_source_name = "SAMPLE / SIMULATED"
-                return True
-
+            self._create_camera_source().release()
+            return True
         except Exception as exc:
             logger.error("Camera init error: %s", exc)
-            self._cam_source = None
             return False
 
     def _release_cam_source(self) -> None:
@@ -138,7 +161,7 @@ class ParkingService:
         return None
 
     def release_camera_source(self) -> None:
-        self._release_cam_source()
+        self._stop_workers()
         self.camera_source_name = "STANDBY"
         logger.info("Camera source released")
 
@@ -174,93 +197,26 @@ class ParkingService:
     # ─── Live camera stream ────────────────────────────────────────────────────
 
     def generate_camera_stream(self) -> Generator[bytes, None, None]:
-        """Yield MJPEG frames from the live camera feed with real-time YOLO overlays."""
-        if self._settings.camera_enabled and self._cam_source is None:
-            if not self._initialize_camera_source():
-                self._cam_source = None
-                self.camera_source_name = "SAMPLE / SIMULATED (FALLBACK)"
-
-        live_mode = self.camera_active and self._cam_source is not None
+        """Yield the shared latest annotated frame without doing camera work."""
         while True:
-            start_t = time.time()
-            frame: Optional[np.ndarray] = None
-
-            if live_mode:
-                try:
-                    vf = self._cam_source.read()  # type: ignore[union-attr]
-                    if vf is not None and vf.frame is not None and not vf.is_cached:
-                        frame = vf.frame
-                        self.last_frame_timestamp = vf.timestamp
-                        self.camera_status = "LIVE"
-                    elif vf is not None and vf.frame is not None:
-                        self.camera_status = "STALE"
-                        self.state_manager.mark_camera_unknown()
-                    else:
-                        self.camera_status = "OFFLINE"
-                        self.state_manager.mark_camera_unknown()
-                        logger.warning("No frame from camera source, using simulated frame")
-                except Exception as exc:
-                    self.camera_status = "OFFLINE"
-                    self.state_manager.mark_camera_unknown()
-                    logger.error("Camera read error: %s", exc)
-
-            if frame is None:
-                frame = self._generate_camera_unavailable_frame()
-                live_mode_label = False
+            if self.camera_active and self._detection_worker:
+                snapshot = self._detection_worker.latest()
+                payload = snapshot.jpeg_bytes
+                self.camera_status = self._camera_worker.diagnostics()["camera_status"] if self._camera_worker else "OFFLINE"
             else:
-                live_mode_label = live_mode
+                payload = None
+                self.camera_status = "OFFLINE"
+            if payload is None:
+                payload = self._placeholder_bytes()
+            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + payload + b"\r\n"
+            time.sleep(1.0 / max(self._settings.camera_fps, 1))
 
-            # ── YOLO detection ──────────────────────────────────────────────
-            # Lower confidence for the 1920x1080 overhead camera; cars are
-            # small in the top portion of the frame.
-            conf_thresh = 0.12 if live_mode_label else 0.30
-            detections = self.detector.detect(frame, conf_threshold=conf_thresh) if live_mode_label else []
-
-            # Never use synthetic fallback frames as occupancy evidence.
-            if self.camera_active and live_mode_label:
-                self.state_manager.process_vision_detections(
-                    detections, image_shape=frame.shape[:2]
-                )
-
-            annotated = self.detector.annotate_frame(
-                frame, detections, self.state_manager.get_slots()
-            )
-
-            # ── Draw calibrated slot polygons ───────────────────────────────
-            if live_mode_label:
-                annotated = self._draw_slot_overlays(annotated)
-
-            # ── Camera meta overlay ─────────────────────────────────────────
-            elapsed = time.time() - start_t
-            self.camera_fps = round(1.0 / elapsed, 1) if elapsed > 0 else 0.0
-            status_text = self.camera_status if self.camera_active else "STANDBY"
-
-            fh, fw = annotated.shape[:2]
-            cv2.putText(
-                annotated,
-                f"FPS: {self.camera_fps} | {status_text} | {self.camera_source_name}",
-                (15, fh - 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (0, 255, 255),
-                1,
-                cv2.LINE_AA,
-            )
-
-            success, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
-            if not success:
-                continue
-
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
-            )
-
-            # ── Rate-limit to target FPS ────────────────────────────────────
-            target = 1.0 / max(self._settings.camera_fps, 1)
-            elapsed = time.time() - start_t
-            if elapsed < target:
-                time.sleep(target - elapsed)
+    def _placeholder_bytes(self) -> bytes:
+        if self._stream_placeholder is None:
+            success, buffer = cv2.imencode(".jpg", self._generate_camera_unavailable_frame())
+            if success:
+                self._stream_placeholder = buffer.tobytes()
+        return self._stream_placeholder or b""
 
     # ─── Slot polygon overlay ──────────────────────────────────────────────────
 
@@ -356,12 +312,7 @@ class ParkingService:
             self.camera_active = not self.camera_active
 
         if self.camera_active:
-            if self._settings.camera_source.upper() not in ("SAMPLE",) and self._settings.camera_enabled:
-                if not self._initialize_camera_source():
-                    self.camera_source_name = "SAMPLE / SIMULATED (INIT FAILED)"
-                    logger.warning("Camera init failed, falling back to sample mode")
-            else:
-                self.camera_source_name = "SAMPLE / SIMULATED"
+            self._start_workers()
             self.camera_status = "CONNECTING"
         else:
             self.release_camera_source()
@@ -375,7 +326,19 @@ class ParkingService:
             "camera_status": self.camera_status,
             "last_frame_timestamp": self.last_frame_timestamp,
             "camera_meta": ASAHI_CAMERA_META if self.camera_active else {},
+            **self._diagnostics(),
         }
+
+    def _diagnostics(self) -> dict[str, Any]:
+        camera = self._camera_worker.diagnostics() if self._camera_worker else {
+            "camera_status": "OFFLINE", "frame_age_s": None, "last_error": None
+        }
+        detector = self._detection_worker.diagnostics() if self._detection_worker else {
+            "detector_status": "OFFLINE", "last_inference_ms": None,
+            "last_detection_count": 0, "last_error": None,
+            "detect_model": self.detector.model_name, "tiles": self._settings.detect_tiles,
+        }
+        return {**camera, **detector}
 
     # ─── Accessors ─────────────────────────────────────────────────────────────
 
@@ -413,6 +376,7 @@ class ParkingService:
             "occupied_slots": overview["occupied"],
             "available_slots": overview["available"],
             "occupancy_pct": overview["occupancy_pct"],
+            **self._diagnostics(),
         }
 
     def get_sections(self) -> list[dict[str, Any]]:
