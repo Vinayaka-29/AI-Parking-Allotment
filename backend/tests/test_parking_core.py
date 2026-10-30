@@ -43,7 +43,8 @@ def test_vision_preserves_reservation_and_reports_conflict():
         "bbox": [1, 1, 9, 9],
         "confidence": 0.95,
     })()
-    state.process_vision_detections([detection], image_shape=(10, 10))
+    for _ in range(3):
+        state.process_vision_detections([detection], image_shape=(10, 10))
 
     slot = state.slots["A01"]
     assert slot["reservation_status"] == "RESERVED"

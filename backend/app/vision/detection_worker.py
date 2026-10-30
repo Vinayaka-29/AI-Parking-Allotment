@@ -130,7 +130,7 @@ class DetectionWorker:
                         time.time(),
                     )
                 self._last_frame_id = camera_frame.frame_id
-            except DetectorInferenceError as exc:
+            except Exception as exc:
                 self._mark_unknown(str(exc), "FAILED", inference_ms=round((time.perf_counter() - started) * 1000, 1))
                 self._last_frame_id = camera_frame.frame_id
             self._stop_event.wait(self.interval_s)
@@ -170,20 +170,22 @@ class DetectionWorker:
         return self._nms(detections)
 
     def _tile_bounds(self, width: int, height: int) -> list[tuple[int, int, int, int]]:
-        tile_width = int(np.ceil(width / self.tile_columns))
-        tile_height = int(np.ceil(height / self.tile_rows))
-        step_x = max(1, int(tile_width * (1.0 - self.tile_overlap)))
-        step_y = max(1, int(tile_height * (1.0 - self.tile_overlap)))
+        tile_width = min(width, int(np.ceil((width / self.tile_columns) * (1.0 + self.tile_overlap))))
+        tile_height = min(height, int(np.ceil((height / self.tile_rows) * (1.0 + self.tile_overlap))))
+        positions_x = [
+            round(index * (width - tile_width) / max(self.tile_columns - 1, 1))
+            for index in range(self.tile_columns)
+        ]
+        positions_y = [
+            round(index * (height - tile_height) / max(self.tile_rows - 1, 1))
+            for index in range(self.tile_rows)
+        ]
         bounds: list[tuple[int, int, int, int]] = []
-        for y in range(0, height, step_y):
-            for x in range(0, width, step_x):
+        for y in positions_y:
+            for x in positions_x:
                 x2 = min(width, x + tile_width)
                 y2 = min(height, y + tile_height)
                 bounds.append((x, y, x2, y2))
-                if x2 == width:
-                    break
-            if y2 == height:
-                break
         return bounds
 
     @staticmethod

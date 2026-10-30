@@ -75,7 +75,7 @@ class SlotOccupancyEngine:
 
         is_occupied = best_score >= self.iou_threshold
         status = "OCCUPIED" if is_occupied else "AVAILABLE"
-        confidence = round(max(0.75, min(0.99, best_conf if is_occupied else (1.0 - best_score))), 2)
+        confidence = round(best_conf if is_occupied else max(0.0, 1.0 - best_score), 2)
 
         return {
             "slot_id": slot["slot_id"],
