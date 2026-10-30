@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.services.parking_service import parking_service
+from app.cameras import camera_metadata
 
 router = APIRouter()
 connected_clients: set[WebSocket] = set()
@@ -27,6 +28,12 @@ class CameraToggleRequest(BaseModel):
 class LayoutCalibrationRequest(BaseModel):
     slots: list[dict[str, Any]]
     lot_name: Optional[str] = "Default Custom Lot"
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
+
+
+class CalibrationConfirmRequest(BaseModel):
+    slots: list[dict[str, Any]]
 
 
 async def broadcast(message: dict) -> None:
@@ -97,16 +104,19 @@ async def vehicles() -> dict:
 
 @router.get("/cameras")
 async def cameras() -> dict:
-    camera_ids = sorted({slot["camera_id"] for slot in parking_service.state_manager.slots.values()})
-    return {"cameras": [{"camera_id": camera_id, "status": "ONLINE"} for camera_id in camera_ids]}
+    camera = parking_service.camera
+    return {"cameras": [{"camera_id": camera.camera_id, "name": camera.name, "status": "ONLINE",
+                          "calibration_status": parking_service.calibration_status}]}
 
 
 @router.get("/camera/info")
 async def camera_info() -> dict:
     """Return metadata for the live CCTV camera source."""
-    from app.services.parking_service import ASAHI_CAMERA_META
     return {
-        "camera": ASAHI_CAMERA_META,
+        "camera": parking_service.camera and {
+            **camera_metadata(parking_service.camera),
+            "insecam_ref": "http://www.insecam.org/en/view/945438/" if parking_service.camera.camera_id == "CAM_ASAHI_JP" else None,
+        },
         "active": parking_service.camera_active,
         "fps": parking_service.camera_fps,
         "source_name": parking_service.camera_source_name,
@@ -170,13 +180,15 @@ async def calibrate_layout(payload: LayoutCalibrationRequest) -> dict:
             "parking_lot": payload.lot_name or "Custom Calibrated Lot",
             "slots": payload.slots,
         }
-        parking_service.state_manager.load_layout(config)
+        result = parking_service.persist_manual_layout(
+            payload.slots, payload.image_width, payload.image_height
+        )
         await broadcast({
             "type": "LAYOUT_CALIBRATED",
             "slots_count": len(payload.slots),
             "overview": parking_service.get_overview(),
         })
-        return {"status": "success", "slots_count": len(payload.slots)}
+        return {"status": "success", "slots_count": len(payload.slots), **result}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to calibrate layout: {str(exc)}") from exc
 
@@ -184,6 +196,38 @@ async def calibrate_layout(payload: LayoutCalibrationRequest) -> dict:
 @router.get("/system")
 async def system() -> dict:
     return parking_service.get_system_status()
+
+
+@router.post("/calibration/start")
+async def calibration_start() -> dict:
+    parking_service.start_calibration()
+    return parking_service.calibration_status_payload()
+
+
+@router.get("/calibration/status")
+async def calibration_status() -> dict:
+    return parking_service.calibration_status_payload()
+
+
+@router.get("/calibration/proposal")
+async def calibration_proposal() -> dict:
+    return parking_service.calibration_proposal()
+
+
+@router.post("/calibration/confirm")
+async def calibration_confirm(payload: CalibrationConfirmRequest) -> dict:
+    try:
+        result = parking_service.confirm_calibration(payload.slots)
+        await broadcast({"type": "LAYOUT_CALIBRATED", "slots_count": result["slots_count"],
+                         "overview": parking_service.get_overview()})
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/calibration/reset")
+async def calibration_reset() -> dict:
+    return parking_service.reset_calibration()
 
 
 @router.post("/detect/image")
