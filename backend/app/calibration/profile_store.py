@@ -35,6 +35,9 @@ class CalibrationProfileStore:
     def fingerprint_path(self, camera_id: str) -> Path:
         return self._directory(camera_id) / "scene.npz"
 
+    def migration_marker(self, camera_id: str) -> Path:
+        return self.root / f".{camera_id}.migration-complete"
+
     def load(self, camera_id: str) -> dict[str, Any] | None:
         with self._lock:
             path = self.profile_path(camera_id)
@@ -96,8 +99,13 @@ class CalibrationProfileStore:
                 pass
 
     def migrate_layout(self, camera_id: str, camera_url: str, layout_path: Path) -> dict[str, Any] | None:
-        if self.load(camera_id) is not None or not layout_path.exists():
-            return self.load(camera_id)
+        existing = self.load(camera_id)
+        if existing is not None:
+            self.root.mkdir(parents=True, exist_ok=True)
+            self.migration_marker(camera_id).write_text("completed\n", encoding="utf-8")
+            return existing
+        if self.migration_marker(camera_id).exists() or not layout_path.exists():
+            return None
         with layout_path.open("r", encoding="utf-8") as handle:
             layout = json.load(handle)
         width = int(layout.get("image_width") or 0)
@@ -110,7 +118,7 @@ class CalibrationProfileStore:
             slots.append({key: raw[key] for key in ("slot_id", "section_id", "type", "priority", "distance_from_entries") if key in raw}
                          | {"polygon": polygon})
         now = datetime.now(timezone.utc).isoformat()
-        return self.save({
+        profile = self.save({
             "camera_id": camera_id,
             "camera_url_hash": self.url_hash(camera_url),
             "frame_width": width,
@@ -124,6 +132,9 @@ class CalibrationProfileStore:
             "version": 0,
             "quality": {"migrated": True},
         })
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.migration_marker(camera_id).write_text("completed\n", encoding="utf-8")
+        return profile
 
 
 def build_fingerprint(frame: np.ndarray) -> tuple[list[cv2.KeyPoint], np.ndarray | None]:
