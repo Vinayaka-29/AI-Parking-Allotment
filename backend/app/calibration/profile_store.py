@@ -43,6 +43,15 @@ class CalibrationProfileStore:
             with path.open("r", encoding="utf-8") as handle:
                 return json.load(handle)
 
+    def load_validated(self, camera_id: str, camera_url: str) -> dict[str, Any] | None:
+        profile = self.load(camera_id)
+        if profile is None:
+            return None
+        if profile.get("camera_url_hash") != self.url_hash(camera_url):
+            profile = dict(profile)
+            profile["status"] = "NEEDS_CALIBRATION"
+        return profile
+
     def save(
         self,
         profile: dict[str, Any],
@@ -61,9 +70,11 @@ class CalibrationProfileStore:
                 json.dump(profile, handle, indent=2)
             os.replace(temp_path, self.profile_path(camera_id))
             if reference is not None:
-                temp_reference = directory / "reference.jpg.tmp"
-                if not cv2.imwrite(str(temp_reference), reference):
+                temp_reference = directory / "reference.jpg.tmp.jpg"
+                success, encoded = cv2.imencode(".jpg", reference)
+                if not success:
                     raise OSError("Unable to write calibration reference image")
+                temp_reference.write_bytes(encoded.tobytes())
                 os.replace(temp_reference, self.reference_path(camera_id))
             if fingerprint is not None:
                 keypoints, descriptors = fingerprint
@@ -120,4 +131,3 @@ def build_fingerprint(frame: np.ndarray) -> tuple[list[cv2.KeyPoint], np.ndarray
     gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
     orb = cv2.ORB_create(nfeatures=1200)
     return orb.detectAndCompute(gray, None)
-

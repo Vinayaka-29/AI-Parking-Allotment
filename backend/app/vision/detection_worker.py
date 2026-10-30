@@ -40,6 +40,7 @@ class DetectionWorker:
         tiles: str = "3x2",
         tile_overlap: float = 0.20,
         full_frame: bool = False,
+        cycle_callback: Any | None = None,
     ) -> None:
         self.camera_worker = camera_worker
         self.detector = detector
@@ -49,6 +50,7 @@ class DetectionWorker:
         self.tile_columns, self.tile_rows = self._parse_tiles(tiles)
         self.tile_overlap = min(0.5, max(0.0, tile_overlap))
         self.full_frame = full_frame
+        self.cycle_callback = cycle_callback
         self._lock = threading.Lock()
         self._snapshot = DetectionSnapshot(None, (), None, None, "OFFLINE", None, None)
         self._last_frame_id: int | None = None
@@ -111,6 +113,8 @@ class DetectionWorker:
             try:
                 detections = self.detect_frame(camera_frame.frame)
                 inference_ms = round((time.perf_counter() - started) * 1000, 1)
+                if self.cycle_callback is not None:
+                    self.cycle_callback(detections, camera_frame.frame)
                 self.state_manager.process_vision_detections(
                     detections,
                     image_shape=camera_frame.frame.shape[:2],

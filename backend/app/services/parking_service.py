@@ -19,28 +19,31 @@ from app.vision.camera_sources import SnapshotCameraSource, OpenCVCameraSource, 
 from app.vision.camera_worker import CameraWorker
 from app.vision.detection_worker import DetectionWorker
 from app.core.config import settings
+from app.cameras import active_camera, camera_metadata
+from app.calibration.auto_calibrator import AutoCalibrator
+from app.calibration.profile_store import CalibrationProfileStore, build_fingerprint
+from app.calibration.scene_monitor import SceneMonitor
 
 logger = logging.getLogger(__name__)
 
 # ─── Camera metadata ───────────────────────────────────────────────────────────
-ASAHI_CAMERA_META = {
-    "camera_id": "CAM_ASAHI_JP",
-    "name": "Asahi Parking Lot — Japan (Live CCTV)",
-    "location": "Asahi, Chiba, Japan",
-    "source_url": "http://124.155.121.218:3000/webcapture.jpg?command=snap&channel=1",
-    "insecam_ref": "http://www.insecam.org/en/view/945438/",
-    "manufacturer": "Hi3516",
-    "resolution": "1920x1080",
-    "fps": 3,
-}
+ASAHI_CAMERA_META = camera_metadata(active_camera())
 
 
 class ParkingService:
     def __init__(self) -> None:
         self._settings = settings
+        self.camera = active_camera()
+        self.profile_store = CalibrationProfileStore()
+        self.scene_monitor = SceneMonitor()
+        self.auto_calibrator = AutoCalibrator(settings.calib_cycles, settings.calib_min_parked)
+        self.calibration_status = "NEEDS_CALIBRATION"
+        self.calibration_message = "No confirmed profile loaded"
+        self._last_calibration_frame: np.ndarray | None = None
+        self._last_scene_check = 0.0
         self.state_manager = ParkingStateManager()
         self.state_manager.occupancy_votes_required = self._settings.occupancy_votes
-        self.detector = VehicleDetector(model_name=settings.detect_model, camera_id="CAM_ASAHI_JP")
+        self.detector = VehicleDetector(model_name=settings.detect_model, camera_id=self.camera.camera_id)
         self.camera_active: bool = False
         self._cam_source: Optional[SnapshotCameraSource | OpenCVCameraSource] = None
         self.last_frame_annotated_b64: str | None = None
@@ -55,22 +58,35 @@ class ParkingService:
     # ─── Layout loading ────────────────────────────────────────────────────────
 
     def initialize_demo_state(self) -> None:
-        """Load parking layout config — prefers the Asahi calibrated layout."""
+        """Migrate/load only the confirmed profile belonging to the active camera."""
         base = Path(__file__).resolve().parents[3] / "configs"
+        candidate = base / "parking_layout_asahi.json"
+        profile = self.profile_store.migrate_layout(self.camera.camera_id, self.camera.url, candidate)
+        self._apply_profile(profile)
 
-        # Try the layout named in settings first (e.g. parking_layout_asahi.json)
-        layout_name = getattr(self._settings, "parking_layout", "asahi")
-        candidate = base / f"parking_layout_{layout_name}.json"
-        fallback = base / "parking_layout.json"
-
-        config_path = candidate if candidate.exists() else fallback
-        if config_path.exists():
-            with config_path.open("r", encoding="utf-8") as handle:
-                config = json.load(handle)
-            self.state_manager.load_layout(config)
-            logger.info("Loaded parking layout: %s (%d slots)", config_path.name, len(config.get("slots", [])))
-        else:
-            logger.warning("No parking layout config found at %s or %s", candidate, fallback)
+    def _apply_profile(self, profile: dict[str, Any] | None) -> None:
+        if not profile or profile.get("status") != "CONFIRMED":
+            self.calibration_status = "NEEDS_CALIBRATION"
+            self.calibration_message = "No confirmed calibration profile for this camera URL"
+            self.state_manager.load_layout({"slots": []})
+            return
+        if profile.get("camera_url_hash") != self.profile_store.url_hash(self.camera.url):
+            self.calibration_status = "NEEDS_CALIBRATION"
+            self.calibration_message = "Calibration profile URL does not match the active camera"
+            self.state_manager.load_layout({"slots": []})
+            return
+        config = {
+            "image_width": profile.get("frame_width"),
+            "image_height": profile.get("frame_height"),
+            "slots": [
+                {**slot, "camera_id": self.camera.camera_id,
+                 "calibration_size": [profile.get("frame_width"), profile.get("frame_height")]}
+                for slot in profile.get("polygons", [])
+            ],
+        }
+        self.state_manager.load_layout(config)
+        self.calibration_status = "CONFIRMED"
+        self.calibration_message = "Confirmed calibration profile loaded"
 
     # ─── Camera initialisation ─────────────────────────────────────────────────
 
@@ -78,7 +94,7 @@ class ParkingService:
         source = self._settings.camera_source.upper()
         url = self._settings.camera_url
         if source == "SNAPSHOT":
-            return SnapshotCameraSource(url=url, camera_id="CAM_ASAHI_JP")
+            return SnapshotCameraSource(url=url, camera_id=self.camera.camera_id)
         if source == "WEBCAM":
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
@@ -125,8 +141,9 @@ class ParkingService:
             tiles=self._settings.detect_tiles,
             tile_overlap=self._settings.detect_tile_overlap,
             full_frame=self._settings.detect_fullframe,
+            cycle_callback=self._handle_detection_cycle,
         )
-        self.camera_source_name = f"{source}: Asahi Parking Lot, Japan"
+        self.camera_source_name = f"{source}: {self.camera.name}"
         self._camera_worker.start()
         self._detection_worker.start()
 
@@ -312,6 +329,8 @@ class ParkingService:
             self.camera_active = not self.camera_active
 
         if self.camera_active:
+            profile = self.profile_store.load_validated(self.camera.camera_id, self.camera.url)
+            self._apply_profile(profile)
             self._start_workers()
             self.camera_status = "CONNECTING"
         else:
@@ -338,7 +357,8 @@ class ParkingService:
             "last_detection_count": 0, "last_error": None,
             "detect_model": self.detector.model_name, "tiles": self._settings.detect_tiles,
         }
-        return {**camera, **detector}
+        return {**camera, **detector, "calibration_status": self.calibration_status,
+                "calibration_message": self.calibration_message, "camera_id": self.camera.camera_id}
 
     # ─── Accessors ─────────────────────────────────────────────────────────────
 
@@ -369,7 +389,7 @@ class ParkingService:
             "camera_source": self.camera_source_name,
             "camera_status": self.camera_status,
             "last_frame_timestamp": self.last_frame_timestamp,
-            "camera_meta": ASAHI_CAMERA_META,
+            "camera_meta": camera_metadata(self.camera),
             "model": "YOLOv8-Nano (COCO Pre-trained)",
             "camera_count": 1,
             "total_slots": overview["total_slots"],
@@ -391,6 +411,144 @@ class ParkingService:
             else:
                 sections[sid]["available"] += 1
         return list(sections.values())
+
+    def _handle_detection_cycle(self, detections: list[Any], frame: np.ndarray) -> None:
+        self._last_calibration_frame = frame.copy()
+        if self.calibration_status == "CONFIRMED" and not self.profile_store.reference_path(self.camera.camera_id).exists():
+            profile = self.profile_store.load(self.camera.camera_id)
+            if profile:
+                self.profile_store.save(profile, reference=frame, fingerprint=build_fingerprint(frame))
+        self._check_scene(frame)
+        if self.calibration_status in {"NEEDS_CALIBRATION", "NEEDS_RECALIBRATION", "CALIBRATING"}:
+            proposal = self.auto_calibrator.update(detections, frame)
+            self.calibration_status = self.auto_calibrator.status
+            self.calibration_message = self.auto_calibrator.message
+            if proposal and proposal.get("status") == "PROPOSED":
+                self._save_proposal(proposal, frame)
+
+    def _check_scene(self, frame: np.ndarray) -> None:
+        now = time.time()
+        if now - self._last_scene_check < self._settings.scene_check_interval_s:
+            return
+        self._last_scene_check = now
+        profile = self.profile_store.load(self.camera.camera_id)
+        if not profile or profile.get("status") != "CONFIRMED":
+            return
+        reference = cv2.imread(str(self.profile_store.reference_path(self.camera.camera_id)))
+        if reference is None:
+            return
+        result = self.scene_monitor.evaluate(reference, frame, profile.get("polygons", []))
+        if result["status"] == "NEEDS_RECALIBRATION":
+            self.calibration_status = "NEEDS_RECALIBRATION"
+            self.calibration_message = result.get("reason", "Camera scene changed")
+            self.state_manager.mark_camera_unknown()
+            self.auto_calibrator.reset()
+        elif result["status"] == "WARPED":
+            profile["polygons"] = result["polygons"]
+            profile["status"] = "CONFIRMED"
+            self.profile_store.save(profile, reference=frame, fingerprint=build_fingerprint(frame))
+            self._apply_profile(profile)
+
+    def start_calibration(self) -> None:
+        self.auto_calibrator.reset()
+        self.calibration_status = "CALIBRATING"
+        self.calibration_message = "Waiting for live frames"
+        self.state_manager.mark_camera_unknown()
+
+    def _save_proposal(self, proposal: dict[str, Any], frame: np.ndarray) -> None:
+        self.profile_store.save({
+            "camera_id": self.camera.camera_id,
+            "camera_url_hash": self.profile_store.url_hash(self.camera.url),
+            "frame_width": frame.shape[1],
+            "frame_height": frame.shape[0],
+            "polygons": proposal["polygons"],
+            "status": "PROPOSED",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "confirmed_at": None,
+            "source": "auto",
+            "scene_fingerprint": None,
+            "quality": proposal.get("quality", {}),
+            "version": 0,
+        }, reference=frame, fingerprint=build_fingerprint(frame))
+
+    def calibration_status_payload(self) -> dict[str, Any]:
+        return {
+            "status": self.calibration_status,
+            "progress": {"cycles_done": self.auto_calibrator.cycles_done, "cycles_total": self.auto_calibrator.total_cycles},
+            "parked_candidates": self.auto_calibrator.proposal.get("quality", {}).get("parked_candidates", 0)
+                if self.auto_calibrator.proposal else 0,
+            "message": self.calibration_message,
+            "camera_id": self.camera.camera_id,
+        }
+
+    def calibration_proposal(self) -> dict[str, Any]:
+        profile = self.profile_store.load(self.camera.camera_id)
+        proposal = profile if profile and profile.get("status") == "PROPOSED" else None
+        result = {"status": "NO_PROPOSAL", "polygons": [], "quality": {}}
+        if proposal:
+            result.update({"status": "PROPOSED", "polygons": proposal.get("polygons", []), "quality": proposal.get("quality", {})})
+            reference = cv2.imread(str(self.profile_store.reference_path(self.camera.camera_id)))
+            if reference is not None:
+                overlay = reference.copy()
+                for slot in result["polygons"]:
+                    points = np.int32([[x * overlay.shape[1], y * overlay.shape[0]] for x, y in slot["polygon"]])
+                    cv2.polylines(overlay, [points], True, (0, 255, 170), 2)
+                    cv2.putText(overlay, slot["slot_id"], tuple(points[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 170), 2)
+                ok, encoded = cv2.imencode(".jpg", overlay)
+                if ok:
+                    import base64
+                    result["reference_jpeg"] = base64.b64encode(encoded).decode("ascii")
+        return result
+
+    def confirm_calibration(self, slots: list[dict[str, Any]]) -> dict[str, Any]:
+        if not slots:
+            raise ValueError("At least one slot is required")
+        for slot in slots:
+            polygon = slot.get("polygon", [])
+            if len(polygon) < 4 or any(len(point) != 2 or any(float(value) < 0 or float(value) > 1 for value in point) for point in polygon):
+                raise ValueError(f"Invalid normalized polygon for {slot.get('slot_id', 'unknown')}")
+        frame = self._last_calibration_frame
+        width = frame.shape[1] if frame is not None else 1920
+        height = frame.shape[0] if frame is not None else 1080
+        now = datetime.now(timezone.utc).isoformat()
+        profile = self.profile_store.save({
+            "camera_id": self.camera.camera_id,
+            "camera_url_hash": self.profile_store.url_hash(self.camera.url),
+            "frame_width": width,
+            "frame_height": height,
+            "polygons": slots,
+            "status": "CONFIRMED",
+            "created_at": now,
+            "confirmed_at": now,
+            "source": "manual",
+            "scene_fingerprint": None,
+            "version": 0,
+        }, reference=frame, fingerprint=build_fingerprint(frame) if frame is not None else None)
+        self._apply_profile(profile)
+        return {"status": "CONFIRMED", "slots_count": len(slots), "camera_id": self.camera.camera_id}
+
+    def reset_calibration(self) -> dict[str, Any]:
+        self.profile_store.delete(self.camera.camera_id)
+        self.start_calibration()
+        return self.calibration_status_payload()
+
+    def persist_manual_layout(self, slots: list[dict[str, Any]], width: int | None = None, height: int | None = None) -> dict[str, Any]:
+        frame = self._last_calibration_frame
+        image_width = width or (frame.shape[1] if frame is not None else 1920)
+        image_height = height or (frame.shape[0] if frame is not None else 1080)
+        normalized = []
+        for index, raw in enumerate(slots):
+            points = raw.get("polygon", [])
+            if any(float(point[0]) > 1 or float(point[1]) > 1 for point in points):
+                points = [[round(float(x) / image_width, 8), round(float(y) / image_height, 8)] for x, y in points]
+            normalized.append({**raw, "slot_id": raw.get("slot_id") or raw.get("id") or f"A{index + 1:02d}", "polygon": points})
+        result = self.confirm_calibration(normalized)
+        self.state_manager.load_layout({
+            "image_width": image_width,
+            "image_height": image_height,
+            "slots": [{**slot, "calibration_size": [image_width, image_height]} for slot in normalized],
+        })
+        return result
 
 
 # ─── Helper wrapper ────────────────────────────────────────────────────────────
