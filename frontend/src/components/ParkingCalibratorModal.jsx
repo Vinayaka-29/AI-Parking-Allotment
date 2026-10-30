@@ -16,10 +16,18 @@ export default function ParkingCalibratorModal({
   const [gridCols, setGridCols] = useState(8)
   const [activeSection, setActiveSection] = useState('A')
   const [imageBounds, setImageBounds] = useState(null)
+  const [calibrationImageUrl, setCalibrationImageUrl] = useState(imageUrl)
+  const [calibrationMessage, setCalibrationMessage] = useState('')
+  const [isAutoCalibrating, setIsAutoCalibrating] = useState(false)
 
   const containerRef = useRef(null)
   const imageRef = useRef(null)
   const hasEditedLayoutRef = useRef(false)
+  const apiBase = import.meta.env.VITE_API_BASE || '/api'
+
+  useEffect(() => {
+    setCalibrationImageUrl(imageUrl)
+  }, [imageUrl])
 
   // Load existing slots or previously saved calibrated layout
   useEffect(() => {
@@ -184,7 +192,34 @@ export default function ParkingCalibratorModal({
   }
 
   // Save layout
-  const handleSave = () => {
+  const handleAutoDetect = async () => {
+    setIsAutoCalibrating(true)
+    setCalibrationMessage('CALIBRATING 0/40')
+    try {
+      const start = await fetch(`${apiBase}/calibration/start`, { method: 'POST' })
+      if (!start.ok) throw new Error('Unable to start auto-calibration')
+      let status
+      do {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        const response = await fetch(`${apiBase}/calibration/status`)
+        status = await response.json()
+        setCalibrationMessage(status.message || `${status.status} ${status.progress?.cycles_done || 0}/${status.progress?.cycles_total || 0}`)
+      } while (status.status === 'CALIBRATING')
+      const proposalResponse = await fetch(`${apiBase}/calibration/proposal`)
+      const proposal = await proposalResponse.json()
+      if (proposal.status !== 'PROPOSED') throw new Error(proposal.message || 'No reliable slot proposal')
+      hasEditedLayoutRef.current = true
+      setSlots(proposal.polygons || [])
+      if (proposal.reference_jpeg) setCalibrationImageUrl(`data:image/jpeg;base64,${proposal.reference_jpeg}`)
+      setCalibrationMessage(`${proposal.status}: ${proposal.quality?.number_of_rows || 0} rows, ${proposal.polygons?.length || 0} slots`)
+    } catch (error) {
+      setCalibrationMessage(error.message)
+    } finally {
+      setIsAutoCalibrating(false)
+    }
+  }
+
+  const handleSave = async () => {
     const layoutData = {
       lot_name: 'Calibrated Camera Layout',
       slots: slots.map((s, idx) => ({
@@ -197,9 +232,19 @@ export default function ParkingCalibratorModal({
       timestamp: new Date().toISOString(),
     }
 
-    saveCalibratedLayout(layoutData)
-    onSaveLayout(layoutData)
-    onClose()
+    try {
+      const response = await fetch(`${apiBase}/calibration/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slots: layoutData.slots }),
+      })
+      if (!response.ok) throw new Error('Backend could not confirm calibration')
+      saveCalibratedLayout(layoutData)
+      onSaveLayout(layoutData)
+      onClose()
+    } catch (error) {
+      setCalibrationMessage(error.message)
+    }
   }
 
   return (
@@ -247,6 +292,14 @@ export default function ParkingCalibratorModal({
               >
                 ⚡ AUTO-FIT GRID
               </button>
+              <button
+                type="button"
+                className="cyber-btn primary-compact"
+                onClick={handleAutoDetect}
+                disabled={isAutoCalibrating}
+              >
+                {isAutoCalibrating ? 'CALIBRATING...' : 'AUTO-DETECT SLOTS'}
+              </button>
             </div>
           </div>
 
@@ -278,7 +331,7 @@ export default function ParkingCalibratorModal({
         </div>
 
         <div className="calibrator-instruction-banner">
-          <span>💡 <strong>HOW TO CALIBRATE:</strong> Use "AUTO-FIT GRID" for instant row alignment, or click and drag directly on the parking lot image to draw custom stalls. Click ✕ on any bay to remove.</span>
+          <span>💡 <strong>HOW TO CALIBRATE:</strong> Use "AUTO-DETECT SLOTS" or "AUTO-FIT GRID", or click and drag directly on the parking lot image to draw custom stalls. Click ✕ on any bay to remove. {calibrationMessage}</span>
         </div>
 
         {/* Interactive Viewport Canvas */}
@@ -292,7 +345,7 @@ export default function ParkingCalibratorModal({
           {imageUrl ? (
             <img
               ref={imageRef}
-              src={imageUrl}
+              src={calibrationImageUrl}
               alt="Parking Lot Scene for Calibration"
               className="calibrator-image"
               draggable={false}

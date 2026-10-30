@@ -66,13 +66,20 @@ function ParkingDashboard() {
   useEffect(() => {
     const savedLayout = loadCalibratedLayout()
     if (!savedLayout?.slots?.length) return
-    fetch('/api/layout/calibrate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lot_name: savedLayout.lot_name || 'Saved Camera Layout', slots: savedLayout.slots }),
-    }).then((response) => {
-      if (response.ok) fetchBackendData()
-    }).catch(() => {})
+    fetch('/api/camera/info')
+      .then(response => response.ok ? response.json() : null)
+      .then(info => {
+        if (info?.calibration_status !== 'NEEDS_CALIBRATION') return
+        return fetch('/api/layout/calibrate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lot_name: savedLayout.lot_name || 'Saved Camera Layout', slots: savedLayout.slots }),
+        })
+      })
+      .then(response => {
+        if (response?.ok) fetchBackendData()
+      })
+      .catch(() => {})
   }, [fetchBackendData])
 
   // Current system clock
