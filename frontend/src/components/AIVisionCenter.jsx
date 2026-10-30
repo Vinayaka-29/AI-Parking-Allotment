@@ -19,7 +19,6 @@ export default function AIVisionCenter({
   activeTab,
   setActiveTab,
   cameraActive,
-  cameraSnapshotUrl,
   cameraLayoutSource,
   onLiveFrameAnalysis,
   setCameraActive,
@@ -35,62 +34,27 @@ export default function AIVisionCenter({
   const [dragOver, setDragOver] = useState(false)
   const [cameraSnapshotOnline, setCameraSnapshotOnline] = useState(false)
   const [cameraPixelsReadable, setCameraPixelsReadable] = useState(null)
-  const [snapshotRefresh, setSnapshotRefresh] = useState(Date.now())
   const [cameraOverlayMode, setCameraOverlayMode] = useState('both')
   const [cameraImageDimensions, setCameraImageDimensions] = useState(null)
+  const [cameraDiagnostics, setCameraDiagnostics] = useState(null)
 
-  // Some cameras accept browser image requests even when the backend cannot
-  // reach them. Poll the JPEG directly as a display fallback.
   useEffect(() => {
     if (!cameraActive) {
       setCameraSnapshotOnline(false)
       return
     }
-
-    setCameraPixelsReadable(null)
-    const refreshTimer = window.setInterval(() => setSnapshotRefresh(Date.now()), 2000)
-    return () => {
-      window.clearInterval(refreshTimer)
-    }
+    let active = true
+    const refresh = () => fetch('/api/camera/info')
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => { if (active) setCameraDiagnostics(data) })
+      .catch(() => {})
+    refresh()
+    const timer = window.setInterval(refresh, 2000)
+    return () => { active = false; window.clearInterval(timer) }
   }, [cameraActive])
-
-  const analyzeDirectCameraFrame = (event) => {
-    const image = event.currentTarget
-    if (cameraFrameBusyRef.current || !onLiveFrameAnalysis || !image.naturalWidth || !image.naturalHeight) return
-    if (Date.now() - lastCameraFrameAnalysisRef.current < 3000) return
-
-    try {
-      const canvas = document.createElement('canvas')
-      canvas.width = image.naturalWidth
-      canvas.height = image.naturalHeight
-      canvas.getContext('2d').drawImage(image, 0, 0)
-      cameraFrameBusyRef.current = true
-      lastCameraFrameAnalysisRef.current = Date.now()
-      canvas.toBlob(async (blob) => {
-        try {
-          if (!blob) throw new Error('Could not encode live frame')
-          await onLiveFrameAnalysis(new File([blob], `live-camera-${Date.now()}.jpg`, { type: 'image/jpeg' }))
-          setCameraPixelsReadable(true)
-        } catch (error) {
-          setCameraPixelsReadable(false)
-          console.warn('Live CCTV frame analysis unavailable:', error)
-        } finally {
-          cameraFrameBusyRef.current = false
-        }
-      }, 'image/jpeg', 0.88)
-    } catch (error) {
-      cameraFrameBusyRef.current = false
-      setCameraPixelsReadable(false)
-      console.warn('Camera image blocks browser pixel access:', error)
-    }
-  }
-
-  const directSnapshotSrc = cameraSnapshotUrl
-    ? `${cameraSnapshotUrl}${cameraSnapshotUrl.includes('?') ? '&' : '?'}_=${snapshotRefresh}`
-    : ''
   const showBays = cameraOverlayMode === 'bays' || cameraOverlayMode === 'both'
   const showVehicles = cameraOverlayMode === 'vehicles' || cameraOverlayMode === 'both'
-  const visibleSource = cameraSnapshotOnline ? 'DIRECT SNAPSHOT + FRONTEND HUD' : 'BACKEND MJPEG (COMBINED)'
+  const visibleSource = 'BACKEND MJPEG (COMBINED)'
 
   // Manage Device Camera stream
   useEffect(() => {
@@ -283,51 +247,20 @@ export default function AIVisionCenter({
                     </div>
                   </div>
                   {/* Live MJPEG stream from backend — YOLO + slot overlays rendered server-side */}
-                  {directSnapshotSrc && (
-                    <img
-                      className="camera-source-probe"
-                      src={directSnapshotSrc}
-                      alt=""
-                      onLoad={() => setCameraSnapshotOnline(true)}
-                      onError={() => setCameraSnapshotOnline(false)}
-                    />
-                  )}
-                  {directSnapshotSrc && (
-                    <img
-                      className="camera-pixel-probe"
-                      crossOrigin="anonymous"
-                      src={directSnapshotSrc}
-                      alt=""
-                      onLoad={analyzeDirectCameraFrame}
-                      onError={() => setCameraPixelsReadable(false)}
-                    />
-                  )}
-                  {cameraSnapshotOnline ? (
-                    <>
-                      <img
-                        src={directSnapshotSrc}
-                        alt="Direct live Asahi parking camera snapshot"
-                        className="cctv-stream cctv-direct-snapshot"
-                        onLoad={(event) => setCameraImageDimensions({
-                          width: event.currentTarget.naturalWidth,
-                          height: event.currentTarget.naturalHeight,
-                        })}
-                        onError={() => setCameraSnapshotOnline(false)}
-                      />
-                      <img src="/api/camera/feed" alt="" className="camera-server-feed-probe" />
-                    </>
-                  ) : (
-                    <img
-                      src="/api/camera/feed"
-                      alt="Asahi parking camera connection status"
-                      className="cctv-stream"
-                      onLoad={(event) => setCameraImageDimensions({
+                  <img
+                    src="/api/camera/feed"
+                    alt="Asahi parking camera connection status"
+                    className="cctv-stream"
+                    onLoad={(event) => {
+                      setCameraSnapshotOnline(true)
+                      setCameraImageDimensions({
                         width: event.currentTarget.naturalWidth,
                         height: event.currentTarget.naturalHeight,
-                      })}
-                    />
-                  )}
-                  {cameraSnapshotOnline && <svg className="live-camera-analysis-overlay" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid meet">
+                      })
+                    }}
+                    onError={() => setCameraSnapshotOnline(false)}
+                  />
+                  <svg className="live-camera-analysis-overlay" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid meet">
                     {showBays && slots.map((slot) => {
                       const polygon = slot.polygon || []
                       if (polygon.length < 3) return null
@@ -343,14 +276,14 @@ export default function AIVisionCenter({
                       if (![x1, y1, x2, y2].every(Number.isFinite)) return null
                       return <g key={`camera-vehicle-${vehicle.tracking_id || index}`}><rect x={x1} y={y1} width={x2 - x1} height={y2 - y1} fill="rgba(0,240,255,.12)" stroke="#00f0ff" strokeWidth="4" /><text x={x1} y={Math.max(24, y1 - 8)} fill="#00f0ff" fontSize="24">{vehicle.class_name} {Math.round((vehicle.confidence || 0) * 100)}%</text></g>
                     })}
-                  </svg>}
+                  </svg>
                   <div className="cctv-hud-grid" />
                   <div className="cctv-corner tl" />
                   <div className="cctv-corner tr" />
                   <div className="cctv-corner bl" />
                   <div className="cctv-corner br" />
                   <div className="cctv-center-target">
-                    <span>{cameraPixelsReadable === false ? 'CAMERA VISIBLE · BROWSER PIXEL ACCESS BLOCKED' : `${vehicles.length} YOLO VEHICLES · ASAHI JP CCTV`}</span>
+                    <span>{cameraDiagnostics?.camera_status || 'CONNECTING'} · {cameraDiagnostics?.detector_status || 'DETECTOR STARTING'} · {cameraDiagnostics?.last_detection_count ?? vehicles.length} YOLO VEHICLES</span>
                   </div>
                   {/* Slot badge */}
                   <div className="viewport-hud-tag" style={{ bottom: '10px', top: 'auto' }}>
@@ -483,7 +416,7 @@ export default function AIVisionCenter({
             </button>
           )}
 
-          {(imagePreviewUrl || (cameraActive && cameraSnapshotUrl)) && onOpenCalibrator && (
+          {(imagePreviewUrl || cameraActive) && onOpenCalibrator && (
             <button
               id="calibrate-layout-btn"
               type="button"

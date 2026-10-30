@@ -112,6 +112,7 @@ async def camera_info() -> dict:
         "source_name": parking_service.camera_source_name,
         "status": parking_service.camera_status,
         "last_frame_timestamp": parking_service.last_frame_timestamp,
+        **parking_service._diagnostics(),
     }
 
 

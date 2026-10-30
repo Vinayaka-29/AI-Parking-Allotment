@@ -39,7 +39,6 @@ function ParkingDashboard() {
   const [selectedSlot, setSelectedSlot] = useState(null)
   const [isAllocating, setIsAllocating] = useState(false)
   const [isCalibratorOpen, setIsCalibratorOpen] = useState(false)
-  const [cameraSnapshotUrl, setCameraSnapshotUrl] = useState('')
   const [cameraLayoutSource, setCameraLayoutSource] = useState('BACKEND CONFIGURED')
   const hiddenFileInputRef = useRef(null)
 
@@ -58,16 +57,10 @@ function ParkingDashboard() {
   }, [state.cameraActive])
 
   useEffect(() => {
-    let active = true
     const savedLayout = loadCalibratedLayout()
     if (savedLayout?.slots?.length) {
       setCameraLayoutSource('LOCALSTORAGE CALIBRATED (SYNCED)')
     }
-    fetch('/api/camera/info')
-      .then((response) => response.ok ? response.json() : null)
-      .then((data) => { if (active) setCameraSnapshotUrl(data?.camera?.source_url || '') })
-      .catch(() => {})
-    return () => { active = false }
   }, [])
 
   useEffect(() => {
@@ -289,7 +282,6 @@ function ParkingDashboard() {
                 activeTab={state.activeTab}
                 setActiveTab={(tab) => dispatch({ type: 'SET_ACTIVE_TAB', payload: tab })}
                 cameraActive={state.cameraActive}
-                cameraSnapshotUrl={cameraSnapshotUrl}
                 cameraLayoutSource={cameraLayoutSource}
                 onLiveFrameAnalysis={analyzeLiveFrame}
                 setCameraActive={handleSetCameraActive}
@@ -342,7 +334,7 @@ function ParkingDashboard() {
       {/* Visual Calibrator Modal */}
       {isCalibratorOpen && (
         <ParkingCalibratorModal
-          imageUrl={state.imagePreviewUrl || state.annotatedImage || cameraSnapshotUrl}
+          imageUrl={state.imagePreviewUrl || state.annotatedImage || '/api/camera/feed'}
           existingSlots={state.slots}
           onSaveLayout={handleSaveCalibratedLayout}
           onClose={() => setIsCalibratorOpen(false)}
