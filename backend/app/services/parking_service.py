@@ -37,8 +37,9 @@ ASAHI_CAMERA_META = {
 
 class ParkingService:
     def __init__(self) -> None:
+        self._settings = settings
         self.state_manager = ParkingStateManager()
-        self.state_manager.occupancy_votes_required = self._settings.occupancy_votes if hasattr(self, "_settings") else 3
+        self.state_manager.occupancy_votes_required = self._settings.occupancy_votes
         self.detector = VehicleDetector(model_name=settings.detect_model, camera_id="CAM_ASAHI_JP")
         self.camera_active: bool = False
         self._cam_source: Optional[SnapshotCameraSource | OpenCVCameraSource] = None
@@ -47,7 +48,6 @@ class ParkingService:
         self.camera_source_name: str = "STANDBY"
         self.camera_status: str = "OFFLINE"
         self.last_frame_timestamp: str | None = None
-        self._settings = settings
         self._camera_worker: CameraWorker | None = None
         self._detection_worker: DetectionWorker | None = None
         self._stream_placeholder: bytes | None = None
