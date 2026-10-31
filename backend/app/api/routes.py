@@ -269,6 +269,10 @@ async def toggle_camera(payload: CameraToggleRequest = CameraToggleRequest()) ->
 @router.get("/camera/feed")
 async def camera_feed():
     """Live MJPEG video stream with real-time YOLO detections and slot overlays."""
+    # The browser can request the stream before the toggle request completes
+    # (or after a page refresh), so the stream must not depend on UI ordering.
+    if not parking_service.camera_active:
+        parking_service.toggle_camera(active=True)
     return StreamingResponse(
         parking_service.generate_camera_stream(),
         media_type="multipart/x-mixed-replace; boundary=frame",
