@@ -1,4 +1,5 @@
 from app.parking.state_manager import ParkingStateManager
+from app.parking.layout_manager import CameraLayoutManager
 
 
 def test_load_layout_and_overview():
@@ -61,3 +62,21 @@ def test_unknown_camera_state_does_not_make_slot_available():
     })
     state.mark_camera_unknown()
     assert state.slots["A01"]["status"] == "UNKNOWN"
+
+
+def test_state_manager_starts_without_demo_slots():
+    state = ParkingStateManager()
+    assert state.get_overview()["total_slots"] == 0
+    assert state.layout_status == "CALIBRATION_REQUIRED"
+
+
+def test_layout_manager_versions_calibrated_camera_layout(tmp_path):
+    manager = CameraLayoutManager(tmp_path / "layouts.json")
+    slot = {"slot_id": "A01", "polygon": [[0, 0], [1, 0], [1, 1]]}
+
+    first = manager.save_calibrated_layout("CAM_01", [slot])
+    second = manager.save_calibrated_layout("CAM_01", [slot])
+
+    assert first["layout_id"] == "CAM_01_V1"
+    assert second["layout_id"] == "CAM_01_V2"
+    assert manager.load_calibrated_layout("CAM_01")["slots"][0]["slot_id"] == "A01"

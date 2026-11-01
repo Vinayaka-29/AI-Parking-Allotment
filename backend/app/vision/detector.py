@@ -121,6 +121,34 @@ class VehicleDetector:
         annotated = frame.copy()
         h, w = annotated.shape[:2]
 
+        for slot in slots or []:
+            raw_polygon = slot.get("polygon", [])
+            if len(raw_polygon) < 3:
+                continue
+            polygon = []
+            for point in raw_polygon:
+                x = point[0] * w if 0 <= point[0] <= 1 else point[0]
+                y = point[1] * h if 0 <= point[1] <= 1 else point[1]
+                polygon.append([int(x), int(y)])
+            color = {
+                "OCCUPIED": (40, 40, 220),
+                "RESERVED": (0, 190, 255),
+                "UNKNOWN": (120, 120, 120),
+            }.get(slot.get("status"), (0, 210, 140))
+            contour = np.asarray(polygon, dtype=np.int32)
+            cv2.polylines(annotated, [contour], True, color, 2, cv2.LINE_AA)
+            anchor = tuple(contour[0])
+            cv2.putText(
+                annotated,
+                f"{slot.get('slot_id', '?')} {slot.get('status', 'UNKNOWN')}",
+                (anchor[0], max(14, anchor[1] - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.38,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
+
         # Draw detected vehicle bounding boxes directly where cars are located
         for idx, det in enumerate(detections):
             bbox = det.bbox
@@ -138,7 +166,8 @@ class VehicleDetector:
             cv2.addWeighted(overlay, 0.15, annotated, 0.85, 0, annotated)
 
             # Tag label background
-            tag = f"AI {det.class_name.upper()} {int(det.confidence * 100)}%"
+            track_label = f" #{det.tracking_id}" if det.tracking_id is not None else ""
+            tag = f"AI {det.class_name.upper()}{track_label} {int(det.confidence * 100)}%"
             (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
             cv2.rectangle(annotated, (x1, max(0, y1 - 18)), (x1 + tw + 6, max(18, y1)), color, -1)
             cv2.putText(

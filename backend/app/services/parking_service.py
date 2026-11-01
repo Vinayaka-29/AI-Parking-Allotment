@@ -200,7 +200,7 @@ class ParkingService:
 
         self.state_manager.process_vision_detections(detections, image_shape=(h, w))
 
-        annotated_bgr = self.detector.annotate_frame(frame_bgr, detections, slots=[])
+        annotated_bgr = self.detector.annotate_frame(frame_bgr, detections, self.state_manager.get_slots())
         annotated_b64 = self.detector.encode_base64_jpeg(annotated_bgr)
         self.last_frame_annotated_b64 = annotated_b64
 

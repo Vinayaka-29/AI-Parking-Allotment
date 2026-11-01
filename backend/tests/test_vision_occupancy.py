@@ -42,3 +42,17 @@ def test_detector_annotation_runs_smoothly():
     assert annotated.shape == (480, 640, 3)
     b64 = detector.encode_base64_jpeg(annotated)
     assert b64.startswith("data:image/jpeg;base64,")
+
+
+def test_global_assignment_does_not_duplicate_vehicle():
+    engine = SlotOccupancyEngine(iou_threshold=0.20)
+    slots = [
+        {"slot_id": "A01", "polygon": [[0, 0], [100, 0], [100, 100], [0, 100]]},
+        {"slot_id": "A02", "polygon": [[90, 0], [190, 0], [190, 100], [90, 100]]},
+    ]
+    detections = [VehicleDetection(tracking_id=7, confidence=0.95, bbox=[40, 20, 140, 80])]
+
+    results = engine.assign_slots(slots, detections)
+
+    assert sum(result["status"] == "OCCUPIED" for result in results) == 1
+    assert sum(result["vehicle_id"] == 7 for result in results) == 1

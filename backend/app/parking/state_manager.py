@@ -15,6 +15,7 @@ class ParkingStateManager:
         self.events: list[dict[str, Any]] = []
         self.allocations: dict[str, str] = {}
         self.occupancy_engine = SlotOccupancyEngine(iou_threshold=0.30)
+        self.layout_status = "CALIBRATION_REQUIRED"
         self.last_analysis_time: str | None = None
         self.total_detections = 0
         self.occupancy_votes_required = 3
@@ -60,6 +61,7 @@ class ParkingStateManager:
                 }
             self.slots = slots
             self._occupancy_votes = {}
+            self.layout_status = config.get("layout_status", "CALIBRATED") if slots else "CALIBRATION_REQUIRED"
 
     def expire_reservations(self, max_minutes: int = 15) -> None:
         with self._state_lock:
