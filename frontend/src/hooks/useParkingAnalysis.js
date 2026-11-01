@@ -13,7 +13,7 @@ export function useParkingAnalysis() {
   const { state, dispatch } = useParkingState()
   const abortRef = useRef(null)
 
-  const candidateUrls = [...new Set([API_BASE, '/api', 'http://127.0.0.1:8000/api'])]
+  const candidateUrls = [...new Set([API_BASE])]
 
   /**
    * Upload an image and prepare it for analysis.
