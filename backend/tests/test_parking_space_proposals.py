@@ -2,10 +2,12 @@ import cv2
 import numpy as np
 
 from app.vision.parking_space_proposals import (
+    infer_parking_spaces,
     propose_parking_spaces,
     suppress_duplicate_proposals,
     validate_polygon,
 )
+from app.vision.detector import VehicleDetection
 
 
 def test_empty_image_returns_no_proposals():
@@ -59,3 +61,23 @@ def test_proposals_report_original_dimensions_and_normalized_coordinates():
     assert (result.image_width, result.image_height) == (200, 100)
     for proposal in result.proposals:
         assert all(0.0 <= coordinate <= 1.0 for point in proposal["polygon"] for coordinate in point)
+
+
+def test_vehicle_geometry_infers_unmarked_gap_slots():
+    image = np.zeros((400, 800, 3), dtype=np.uint8)
+    detections = [
+        VehicleDetection(confidence=0.9, bbox=[80, 120, 160, 220]),
+        VehicleDetection(confidence=0.9, bbox=[560, 120, 640, 220]),
+        VehicleDetection(confidence=0.9, bbox=[720, 120, 800, 220]),
+    ]
+
+    result = infer_parking_spaces(image, detections)
+
+    assert result.status == "PROPOSALS_FOUND"
+    assert any(proposal["evidence"] == "vehicle-gap" for proposal in result.proposals)
+    assert all(
+        0.0 <= value <= 1.0
+        for proposal in result.proposals
+        for point in proposal["polygon"]
+        for value in point
+    )

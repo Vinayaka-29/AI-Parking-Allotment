@@ -23,6 +23,7 @@ from app.cameras import active_camera, camera_metadata
 from app.calibration.auto_calibrator import AutoCalibrator
 from app.calibration.profile_store import CalibrationProfileStore, build_fingerprint
 from app.calibration.scene_monitor import SceneMonitor
+from app.vision.parking_space_proposals import infer_parking_spaces
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +189,7 @@ class ParkingService:
     # ─── Image upload analysis ─────────────────────────────────────────────────
 
     def process_image_upload(self, file_bytes: bytes) -> dict[str, Any]:
-        """Process an uploaded image file with YOLOv8 and update slot occupancy."""
+        """Detect vehicles and infer slots when an uploaded image has no layout."""
         image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         img_np = np.array(image)
         frame_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
@@ -198,17 +199,72 @@ class ParkingService:
         detections = self.detector.detect(frame_bgr, conf_threshold=0.15)
         inference_time_ms = round((time.time() - start_time) * 1000, 1)
 
-        self.state_manager.process_vision_detections(detections, image_shape=(h, w))
+        slots = self.state_manager.get_slots()
+        inferred = False
+        if not slots:
+            proposal = infer_parking_spaces(frame_bgr, detections)
+            slots = [
+                {
+                    **slot,
+                    "camera_id": self.camera.camera_id,
+                    "calibration_size": [w, h],
+                }
+                for slot in proposal.proposals
+            ]
+            inferred = bool(slots)
 
-        annotated_bgr = self.detector.annotate_frame(frame_bgr, detections, self.state_manager.get_slots())
+        if inferred:
+            occupancy = []
+            for slot in slots:
+                result = self.state_manager.occupancy_engine.compute_slot_status(
+                    slot, detections, image_shape=(h, w)
+                )
+                enriched = dict(slot)
+                enriched.update({
+                    "status": result["status"],
+                    "physical_status": result["status"],
+                    "confidence": result["confidence"],
+                    "vehicle_id": result.get("vehicle_id"),
+                })
+                occupancy.append(enriched)
+            result_slots = occupancy
+            overview = {
+                "total_slots": len(result_slots),
+                "available": sum(slot["status"] == "AVAILABLE" for slot in result_slots),
+                "occupied": sum(slot["status"] == "OCCUPIED" for slot in result_slots),
+                "reserved": 0,
+                "unknown": sum(slot["status"] == "UNKNOWN" for slot in result_slots),
+                "conflicts": 0,
+                "occupancy_pct": round(
+                    sum(slot["status"] == "OCCUPIED" for slot in result_slots)
+                    / len(result_slots) * 100,
+                    1,
+                ),
+                "last_analysis_time": datetime.now(timezone.utc).isoformat(),
+                "active_detections": len(detections),
+            }
+        else:
+            self.state_manager.process_vision_detections(detections, image_shape=(h, w))
+            result_slots = self.state_manager.get_slots()
+            overview = self.state_manager.get_overview()
+
+        annotated_bgr = self.detector.annotate_frame(frame_bgr, detections, result_slots)
         annotated_b64 = self.detector.encode_base64_jpeg(annotated_bgr)
         self.last_frame_annotated_b64 = annotated_b64
 
         return {
-            "overview": self.state_manager.get_overview(),
-            "slots": self.state_manager.get_slots(),
+            "overview": overview,
+            "slots": result_slots,
             "detections": [d.to_dict() for d in detections],
             "total_detected_vehicles": len(detections),
+            "calibration": {
+                "mode": "inferred" if inferred else "existing_profile",
+                "confidence": round(
+                    float(np.mean([slot.get("confidence", 0.0) for slot in result_slots] or [0.0])),
+                    3,
+                ),
+                "requires_review": inferred,
+            },
             "inference_time_ms": inference_time_ms,
             "annotated_image": annotated_b64,
             "timestamp": time.time(),

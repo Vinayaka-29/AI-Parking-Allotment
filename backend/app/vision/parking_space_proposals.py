@@ -28,6 +28,112 @@ class ParkingSpaceProposalResult:
         }
 
 
+def infer_vehicle_slots(
+    frame: np.ndarray,
+    detections: list[Any],
+    *,
+    min_detections_per_row: int = 2,
+) -> list[dict[str, Any]]:
+    """Infer rectangular bays from vehicle centers and the gaps between them.
+
+    This is deliberately conservative: a row needs at least two vehicles so
+    the observed spacing provides evidence for an unmarked bay.
+    """
+    if not isinstance(frame, np.ndarray) or frame.ndim not in (2, 3):
+        return []
+    height, width = frame.shape[:2]
+    boxes: list[list[float]] = []
+    for detection in detections:
+        bbox = getattr(detection, "bbox", None)
+        if bbox is None and isinstance(detection, dict):
+            bbox = detection.get("bbox")
+        if bbox is None or len(bbox) < 4:
+            continue
+        x1, y1, x2, y2 = map(float, bbox[:4])
+        if x2 > x1 and y2 > y1:
+            boxes.append([x1, y1, x2, y2])
+    if len(boxes) < min_detections_per_row:
+        return []
+
+    median_height = float(np.median([box[3] - box[1] for box in boxes]))
+    row_tolerance = max(24.0, median_height * 1.5)
+    rows: list[list[list[float]]] = []
+    for box in sorted(boxes, key=lambda item: (item[1] + item[3], item[0])):
+        center_y = (box[1] + box[3]) / 2.0
+        row = next(
+            (candidate for candidate in rows
+             if abs((candidate[0][1] + candidate[0][3]) / 2.0 - center_y) <= row_tolerance),
+            None,
+        )
+        if row is None:
+            rows.append([box])
+        else:
+            row.append(box)
+
+    proposals: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows):
+        if len(row) < min_detections_per_row:
+            continue
+        row.sort(key=lambda item: (item[0] + item[2]) / 2.0)
+        centers = np.asarray([(box[0] + box[2]) / 2.0 for box in row], dtype=np.float32)
+        widths = np.asarray([box[2] - box[0] for box in row], dtype=np.float32)
+        heights = np.asarray([box[3] - box[1] for box in row], dtype=np.float32)
+        gaps = np.diff(centers)
+        valid_gaps = gaps[gaps >= max(float(np.median(widths)) * 1.2, 8.0)]
+        if not len(valid_gaps):
+            continue
+        pitch = float(np.median(valid_gaps))
+        bay_width = float(np.clip(np.median(widths) * 1.35, pitch * 0.55, pitch * 0.95))
+        bay_height = float(np.median(heights) * 1.45)
+        y_center = float(np.median([(box[1] + box[3]) / 2.0 for box in row]))
+        start = max(bay_width / 2.0, float(centers[0]))
+        end = min(width - bay_width / 2.0, float(centers[-1]))
+        count = max(1, int(round((end - start) / pitch)) + 1)
+        for slot_index in range(count):
+            center_x = start + slot_index * pitch
+            nearest_distance = float(np.min(np.abs(centers - center_x)))
+            occupied = nearest_distance <= pitch * 0.35
+            x1 = max(0.0, center_x - bay_width / 2.0)
+            x2 = min(float(width), center_x + bay_width / 2.0)
+            y1 = max(0.0, y_center - bay_height / 2.0)
+            y2 = min(float(height), y_center + bay_height / 2.0)
+            proposals.append({
+                "slot_id": f"{chr(65 + row_index)}{slot_index + 1:02d}",
+                "section_id": chr(65 + row_index),
+                "polygon": [[round(x1 / width, 6), round(y1 / height, 6)],
+                            [round(x2 / width, 6), round(y1 / height, 6)],
+                            [round(x2 / width, 6), round(y2 / height, 6)],
+                            [round(x1 / width, 6), round(y2 / height, 6)]],
+                "type": "STANDARD",
+                "priority": 1,
+                "distance_from_entries": round((slot_index + 1) * 3 + row_index * 10, 2),
+                "confidence": 0.78 if occupied else 0.66,
+                "evidence": "vehicle-row" if occupied else "vehicle-gap",
+                "status": "NEEDS_REVIEW",
+            })
+    return proposals
+
+
+def infer_parking_spaces(frame: np.ndarray, detections: list[Any]) -> ParkingSpaceProposalResult:
+    """Combine line evidence and vehicle-row geometry for both input modes."""
+    line_result = propose_parking_spaces(frame)
+    vehicle_proposals = infer_vehicle_slots(frame, detections)
+    combined = list(vehicle_proposals)
+    for candidate in line_result.proposals:
+        if not any(_polygon_iou(candidate["polygon"], slot["polygon"]) >= 0.4 for slot in combined):
+            line_candidate = dict(candidate)
+            line_candidate["slot_id"] = f"L{len(combined) + 1:02d}"
+            line_candidate["section_id"] = "L"
+            line_candidate["evidence"] = "line-only"
+            combined.append(line_candidate)
+    return ParkingSpaceProposalResult(
+        "PROPOSALS_FOUND" if combined else "NO_PROPOSALS",
+        line_result.image_width,
+        line_result.image_height,
+        combined,
+    )
+
+
 def propose_parking_spaces(
     frame: np.ndarray,
     *,

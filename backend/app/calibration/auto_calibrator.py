@@ -83,12 +83,33 @@ class AutoCalibrator:
 
     def _build_proposal(self, frame: np.ndarray) -> dict[str, Any]:
         height, width = frame.shape[:2]
+        line_proposals = propose_parking_spaces(frame).proposals
         parked = [
             track for track in self.tracks
             if track.hits / max(track.cycles_seen, 1) >= 0.70
             and self._is_stationary(track, width, height)
         ]
         if len(parked) < self.min_parked:
+            if line_proposals:
+                for index, candidate in enumerate(line_proposals, start=1):
+                    candidate["slot_id"] = f"L{index:02d}"
+                    candidate["section_id"] = "L"
+                    candidate["evidence"] = "line-only"
+                return {
+                    "status": "PROPOSED",
+                    "message": f"Proposed {len(line_proposals)} line-based slots; vehicle evidence is limited.",
+                    "polygons": line_proposals,
+                    "quality": {
+                        "number_of_rows": 0,
+                        "parked_candidates": len(parked),
+                        "inferred_slots": 0,
+                        "line_slots": len(line_proposals),
+                        "coverage": 0.0,
+                        "requires_review": True,
+                    },
+                    "image_width": width,
+                    "image_height": height,
+                }
             return {
                 "status": "NEEDS_MORE_DATA",
                 "message": f"Only {len(parked)} stationary vehicles found; need at least {self.min_parked}.",
@@ -146,7 +167,6 @@ class AutoCalibrator:
                     "evidence": "parked" if is_parked else "inferred",
                 })
 
-        line_proposals = propose_parking_spaces(frame).proposals
         for candidate in line_proposals:
             if not any(self._polygon_iou(candidate["polygon"], slot["polygon"]) >= 0.4 for slot in polygons):
                 candidate = dict(candidate)
