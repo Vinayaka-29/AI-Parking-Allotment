@@ -62,7 +62,12 @@ class VehicleDetector:
             logger.error("Could not load YOLO model (%s): %s", self.model_name, exc)
             self.model = None
 
-    def detect(self, frame: np.ndarray, conf_threshold: float = 0.12) -> list[VehicleDetection]:
+    def detect(
+        self,
+        frame: np.ndarray,
+        conf_threshold: float = 0.12,
+        imgsz: int | None = None,
+    ) -> list[VehicleDetection]:
         """Detect vehicles in an image frame (BGR format) using YOLOv8.
 
         conf_threshold is intentionally low (0.12) for top-down CCTV footage
@@ -80,10 +85,15 @@ class VehicleDetector:
 
         if self.model is not None:
             try:
-                # Use imgsz=1280 for HD frames (1920x1080 CCTV)
+                # Callers can select a smaller size for latency-sensitive uploads.
                 h, w = frame.shape[:2]
-                imgsz = 1280 if (w >= 1280 or h >= 720) else 640
-                results = self.model.predict(source=frame, conf=conf_threshold, imgsz=imgsz, verbose=False)
+                inference_size = imgsz or (1280 if (w >= 1280 or h >= 720) else 640)
+                results = self.model.predict(
+                    source=frame,
+                    conf=conf_threshold,
+                    imgsz=inference_size,
+                    verbose=False,
+                )
                 if results and len(results) > 0:
                     first_result = results[0]
                     boxes = first_result.boxes

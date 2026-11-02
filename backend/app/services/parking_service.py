@@ -189,14 +189,18 @@ class ParkingService:
     # ─── Image upload analysis ─────────────────────────────────────────────────
 
     def process_image_upload(self, file_bytes: bytes) -> dict[str, Any]:
-        """Detect vehicles and infer slots when an uploaded image has no layout."""
+        """Detect vehicles and infer slots with one bounded, low-latency pass."""
         image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         img_np = np.array(image)
         frame_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
         h, w = frame_bgr.shape[:2]
 
         start_time = time.time()
-        detections = self.detector.detect(frame_bgr, conf_threshold=0.15)
+        detections = self.detector.detect(
+            frame_bgr,
+            conf_threshold=0.15,
+            imgsz=self._settings.upload_detect_imgsz,
+        )
         inference_time_ms = round((time.time() - start_time) * 1000, 1)
 
         slots = self.state_manager.get_slots()
@@ -266,6 +270,8 @@ class ParkingService:
                 "requires_review": inferred,
             },
             "inference_time_ms": inference_time_ms,
+            "processing_budget_seconds": self._settings.upload_timeout_s,
+            "within_processing_budget": (time.time() - start_time) <= self._settings.upload_timeout_s,
             "annotated_image": annotated_b64,
             "timestamp": time.time(),
         }

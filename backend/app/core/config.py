@@ -18,8 +18,10 @@ class Settings(BaseSettings):
     camera_enabled: bool = True  # Master switch for live camera
     camera_stale_after_s: float = 10.0
     camera_fetch_interval_s: float = 1.0
-    detect_model: str = "yolov8s.pt"
+    detect_model: str = "yolov8n.pt"
     detect_conf: float = 0.25
+    upload_detect_imgsz: int = 640
+    upload_timeout_s: float = 10.0
     detect_interval_s: float = 1.0
     detect_tiles: str = "3x2"
     detect_tile_overlap: float = 0.20
