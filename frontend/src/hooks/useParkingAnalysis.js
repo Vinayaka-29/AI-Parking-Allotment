@@ -2,18 +2,23 @@ import { useCallback, useRef } from 'react'
 import { useParkingState } from '../context/ParkingContext'
 import { analyzeImageInBrowser } from '../utils/browserVision'
 
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+  const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
-/**
- * Custom hook encapsulating the entire analysis workflow.
- * Manages state transitions: IMAGE_UPLOADED → ANALYZING → ANALYSIS_COMPLETE | ANALYSIS_ERROR
- * Never generates fake parking data.
- */
-export function useParkingAnalysis() {
-  const { state, dispatch } = useParkingState()
-  const abortRef = useRef(null)
+  /**
+   * Custom hook encapsulating the entire analysis workflow.
+   * Manages state transitions: IMAGE_UPLOADED → ANALYZING → ANALYSIS_COMPLETE | ANALYSIS_ERROR
+   * Never generates fake parking data.
+   */
+  export function useParkingAnalysis() {
+    const { state, dispatch } = useParkingState()
+    const abortRef = useRef(null)
 
-  const candidateUrls = [...new Set([API_BASE, 'http://localhost:8000/api', 'http://127.0.0.1:8000/api', 'http://localhost:8000', 'http://127.0.0.1:8000'].filter(Boolean))]
+    // In production, we rely strictly on VITE_API_BASE.
+    // Localhost fallbacks are kept only if API_BASE is not set.
+    const candidateUrls = [API_BASE].filter(Boolean)
+    if (!import.meta.env.PROD) {
+      candidateUrls.push('http://localhost:8000/api', 'http://127.0.0.1:8000/api')
+    }
 
   /**
    * Upload an image and prepare it for analysis.
@@ -75,10 +80,12 @@ export function useParkingAnalysis() {
           data = await res.json()
           dispatch({ type: 'SET_BACKEND_CONNECTED', payload: true })
           break
+        } else {
+          console.error(`Backend request to ${baseUrl} failed with status: ${res.status}`)
         }
       } catch (e) {
         if (e.name === 'AbortError') return
-        // try next endpoint
+        console.error(`Network error connecting to ${baseUrl}:`, e)
       }
     }
 

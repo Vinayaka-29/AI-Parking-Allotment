@@ -1,13 +1,16 @@
-from __future__ import annotations
-
 import json
+import io
 from typing import Any, Optional
 from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from PIL import Image
 
 from app.services.parking_service import parking_service
 from app.cameras import camera_metadata
+from app.vision.parking_space_proposals import _extract_line_segments, _classify_dividers, _pair_dividers_into_bays
+import cv2
+import numpy as np
 
 router = APIRouter()
 connected_clients: set[WebSocket] = set()
@@ -237,6 +240,57 @@ async def calibration_confirm(payload: CalibrationConfirmRequest) -> dict:
 @router.post("/calibration/reset")
 async def calibration_reset() -> dict:
     return parking_service.reset_calibration()
+
+
+@router.post("/debug/lines")
+async def debug_lines(file: UploadFile = File(...)) -> dict:
+    """Debug endpoint: show raw line detection, classification, and bay pairing."""
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty image")
+
+    image = Image.open(io.BytesIO(content)).convert("RGB")
+    frame_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    h, w = frame_bgr.shape[:2]
+
+    # Extract raw segments
+    segments = _extract_line_segments(frame_bgr)
+
+    # Classify
+    classified = _classify_dividers(segments, h, w)
+
+    # Get dividers
+    dividers = [s for s in classified if s.is_divider]
+
+    # Pair into bays
+    bays = _pair_dividers_into_bays(dividers, h, w)
+
+    return {
+        "image_size": {"width": w, "height": h},
+        "total_segments": len(segments),
+        "segments": [
+            {
+                "bottom": [round(s.bottom[0], 1), round(s.bottom[1], 1)],
+                "top": [round(s.top[0], 1), round(s.top[1], 1)],
+                "length": round(s.length, 1),
+                "angle_deg": round(s.angle_deg, 1),
+                "dx_per_dy": round(s.dx_per_dy, 3),
+                "is_divider": s.is_divider,
+            }
+            for s in classified
+        ],
+        "dividers_count": len(dividers),
+        "bays_count": len(bays),
+        "bays": [
+            {
+                "span": round(b["span"], 1),
+                "mid_x": round(b["mid_x"], 1),
+                "mid_y": round(b["mid_y"], 1),
+                "polygon": b["polygon"],
+            }
+            for b in bays
+        ],
+    }
 
 
 @router.post("/detect/image")
