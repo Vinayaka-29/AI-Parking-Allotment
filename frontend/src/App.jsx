@@ -247,15 +247,6 @@ function ParkingDashboard() {
 
       {/* Main Container */}
       <main className="dashboard-main-content">
-        {/* Statistics Summary Bar (Dynamic: dashes when unanalyzed) */}
-        <ParkingSummaryBar
-          overview={state.overview}
-          slots={state.slots}
-          telemetry={state.telemetry}
-          appState={state.appState}
-          isScanning={isScanning}
-        />
-
         {/* Empty Standby Hero when zero image loaded */}
         {isStandby ? (
           <EmptyState
@@ -328,6 +319,15 @@ function ParkingDashboard() {
             </div>
           </div>
         )}
+
+        {/* Statistics Summary Bar (Dynamic: dashes when unanalyzed) */}
+        <ParkingSummaryBar
+          overview={state.overview}
+          slots={state.slots}
+          telemetry={state.telemetry}
+          appState={state.appState}
+          isScanning={isScanning}
+        />
 
         {/* Previous Analysis Sessions History */}
         {state.analysisHistory.length > 0 && (
