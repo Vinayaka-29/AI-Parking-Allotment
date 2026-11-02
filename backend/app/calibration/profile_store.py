@@ -44,16 +44,44 @@ class CalibrationProfileStore:
             if not path.exists():
                 return None
             with path.open("r", encoding="utf-8") as handle:
-                return json.load(handle)
+                return self._normalize_profile(json.load(handle))
 
     def load_validated(self, camera_id: str, camera_url: str) -> dict[str, Any] | None:
         profile = self.load(camera_id)
         if profile is None:
             return None
+        profile = self._normalize_profile(profile)
         if profile.get("camera_url_hash") != self.url_hash(camera_url):
             profile = dict(profile)
             profile["status"] = "NEEDS_CALIBRATION"
         return profile
+
+    @staticmethod
+    def _normalize_profile(profile: dict[str, Any]) -> dict[str, Any]:
+        """Return a backward-compatible profile using normalized polygons."""
+        normalized = dict(profile)
+        width = float(profile.get("frame_width") or 0)
+        height = float(profile.get("frame_height") or 0)
+        slots = []
+        for raw in profile.get("polygons", []):
+            slot = dict(raw)
+            points = raw.get("polygon", [])
+            if width > 0 and height > 0 and any(
+                float(point[0]) > 1.0 or float(point[1]) > 1.0
+                for point in points
+            ):
+                slot["polygon"] = [
+                    [round(float(x) / width, 8), round(float(y) / height, 8)]
+                    for x, y in points
+                ]
+            else:
+                slot["polygon"] = [
+                    [round(float(x), 8), round(float(y), 8)]
+                    for x, y in points
+                ]
+            slots.append(slot)
+        normalized["polygons"] = slots
+        return normalized
 
     def save(
         self,

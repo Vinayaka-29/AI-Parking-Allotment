@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     camera_stale_after_s: float = 10.0
     camera_fetch_interval_s: float = 1.0
     detect_model: str = "yolov8n.pt"
-    detect_conf: float = 0.25
+    detect_conf: float = 0.4
     upload_detect_imgsz: int = 640
     upload_timeout_s: float = 10.0
     detect_interval_s: float = 1.0

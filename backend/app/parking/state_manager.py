@@ -117,8 +117,21 @@ class ParkingStateManager:
         with self._state_lock:
             self.last_analysis_time = datetime.now(timezone.utc).isoformat()
             self.total_detections = len(detections)
-            for slot in self.slots.values():
-                result = self.occupancy_engine.compute_slot_status(slot, detections, image_shape)
+            slot_list = list(self.slots.values())
+            results = self.occupancy_engine.assign_slots(
+                slot_list,
+                detections,
+                image_shape=image_shape,
+            )
+            result_by_id = {result["slot_id"]: result for result in results}
+            for slot in slot_list:
+                result = result_by_id.get(
+                    slot["slot_id"],
+                    {
+                        "status": "UNKNOWN",
+                        "confidence": 0.0,
+                    },
+                )
                 next_status = result["status"]
                 if next_status in {"AVAILABLE", "OCCUPIED"}:
                     previous, count = self._occupancy_votes.get(slot["slot_id"], ("", 0))

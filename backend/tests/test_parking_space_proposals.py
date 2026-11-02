@@ -6,6 +6,7 @@ from app.vision.parking_space_proposals import (
     propose_parking_spaces,
     suppress_duplicate_proposals,
     validate_polygon,
+    validate_proposals,
 )
 from app.vision.detector import VehicleDetection
 
@@ -54,6 +55,26 @@ def test_duplicate_proposals_keep_highest_confidence():
     assert result[0]["confidence"] == 0.9
 
 
+def test_overlapping_layout_is_not_eligible_for_confirmation():
+    proposals = [
+        {"polygon": [[0.1, 0.1], [0.4, 0.1], [0.4, 0.5], [0.1, 0.5]], "confidence": 0.9, "evidence": "line-pair"},
+        {"polygon": [[0.3, 0.1], [0.6, 0.1], [0.6, 0.5], [0.3, 0.5]], "confidence": 0.9, "evidence": "line-pair"},
+    ]
+    result = validate_proposals(proposals, 1000, 600)
+    assert result["eligible"] is False
+    assert result["confidence"] != "HIGH"
+
+
+def test_vehicle_lattice_is_not_eligible_for_confirmation():
+    proposals = [
+        {"polygon": [[0.1, 0.2], [0.2, 0.2], [0.2, 0.5], [0.1, 0.5]], "confidence": 0.7, "evidence": "vehicle-lattice"},
+        {"polygon": [[0.3, 0.2], [0.4, 0.2], [0.4, 0.5], [0.3, 0.5]], "confidence": 0.7, "evidence": "vehicle-gap"},
+    ]
+    result = validate_proposals(proposals, 1000, 600)
+    assert result["eligible"] is False
+    assert any("Vehicle positions" in issue for issue in result["issues"])
+
+
 def test_proposals_report_original_dimensions_and_normalized_coordinates():
     image = np.zeros((100, 200, 3), dtype=np.uint8)
     cv2.rectangle(image, (20, 20), (100, 80), (255, 255, 255), 4)
@@ -63,7 +84,7 @@ def test_proposals_report_original_dimensions_and_normalized_coordinates():
         assert all(0.0 <= coordinate <= 1.0 for point in proposal["polygon"] for coordinate in point)
 
 
-def test_vehicle_geometry_infers_unmarked_gap_slots():
+def test_vehicle_geometry_is_not_used_for_automatic_calibration():
     image = np.zeros((400, 800, 3), dtype=np.uint8)
     detections = [
         VehicleDetection(confidence=0.9, bbox=[80, 120, 160, 220]),
@@ -73,11 +94,7 @@ def test_vehicle_geometry_infers_unmarked_gap_slots():
 
     result = infer_parking_spaces(image, detections)
 
-    assert result.status == "PROPOSALS_FOUND"
-    assert any(proposal["evidence"] == "vehicle-gap" for proposal in result.proposals)
-    assert all(
-        0.0 <= value <= 1.0
+    assert not any(
+        proposal.get("evidence") in {"vehicle-lattice", "vehicle-gap"}
         for proposal in result.proposals
-        for point in proposal["polygon"]
-        for value in point
     )

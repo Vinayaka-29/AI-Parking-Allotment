@@ -22,6 +22,26 @@ This repository implements the first working milestone described in the project 
 - Parking logic: state manager and allocation engine
 - Frontend: React + Vite dashboard
 
+## Automatic CCTV calibration
+
+When a camera starts without a confirmed profile, the backend analyzes new
+frames, extracts parking-marking geometry with OpenCV, groups boundaries into
+perspective-aware polygons, and validates the complete layout before saving it.
+Repeated/stale frames are not counted as independent calibration evidence.
+
+Vehicle detections are used for occupancy and supporting calibration evidence,
+but vehicle positions alone cannot confirm parking boundaries. Layout validation
+rejects invalid polygons, excessive overlap, inconsistent dimensions, and
+vehicle-only proposals. Rejected proposals remain available through the
+calibration API for the manual editor fallback.
+
+An optional `ParkingSpaceSegmenter` adapter is available under
+`backend/app/calibration/parking_space_segmenter.py`. It only loads an
+explicitly supplied, locally existing segmentation weight file; it never
+downloads weights and does not use the vehicle detector as a segmentation
+model. Without verified parking-space weights, OpenCV remains the automatic
+calibration engine.
+
 ## Run backend
 
 ```bash

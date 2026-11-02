@@ -65,14 +65,10 @@ class VehicleDetector:
     def detect(
         self,
         frame: np.ndarray,
-        conf_threshold: float = 0.12,
+        conf_threshold: float = 0.4,
         imgsz: int | None = None,
     ) -> list[VehicleDetection]:
-        """Detect vehicles in an image frame (BGR format) using YOLOv8.
-
-        conf_threshold is intentionally low (0.12) for top-down CCTV footage
-        where vehicles appear small and partially occluded.
-        """
+        """Detect vehicles in an image frame (BGR format) using YOLOv8."""
         if frame is None or frame.size == 0:
             return []
 
@@ -103,6 +99,16 @@ class VehicleDetector:
                             if cls_id in VEHICLE_CLASS_IDS:
                                 conf = float(box.conf[0].item()) if hasattr(box.conf[0], "item") else float(box.conf[0])
                                 xyxy = box.xyxy[0].tolist() if hasattr(box.xyxy[0], "tolist") else list(box.xyxy[0])
+                                box_width = float(xyxy[2]) - float(xyxy[0])
+                                box_height = float(xyxy[3]) - float(xyxy[1])
+                                if (
+                                    box_width <= 0
+                                    or box_height <= 0
+                                    or box_width > w * 0.25
+                                    or box_width * box_height > (w * h) * 0.08
+                                ):
+                                    logger.info("Ignoring oversized vehicle detection: %s", xyxy)
+                                    continue
                                 class_name = VEHICLE_CLASS_IDS.get(cls_id, "car")
                                 detections.append(
                                     VehicleDetection(

@@ -69,13 +69,26 @@ class SlotOccupancyEngine:
             anchor_x = (vx1 + vx2) / 2.0
             anchor_y = vy2 - ((vy2 - vy1) * 0.15)
             anchor_inside = cv2.pointPolygonTest(poly_np, (anchor_x, anchor_y), False) >= 0
-            score = max(overlap_ratio, 1.0 if anchor_inside else 0.0)
+            center_x = (vx1 + vx2) / 2.0
+            center_y = (vy1 + vy2) / 2.0
+            center_inside = cv2.pointPolygonTest(poly_np, (center_x, center_y), False) >= 0
+            # A lane vehicle may clip a polygon, but normally has neither its
+            # contact point nor its center inside the bay. Require spatial
+            # agreement rather than allowing a raw intersection to win.
+            score = (
+                0.55 * overlap_ratio
+                + 0.35 * float(anchor_inside)
+                + 0.10 * float(center_inside)
+            )
+            if anchor_inside and overlap_ratio >= 0.5:
+                score = max(score, 1.0)
             if score > best_score:
                 best_score = score
                 best_conf = conf
                 best_detection = det
 
-        is_occupied = best_score >= self.iou_threshold
+        has_spatial_evidence = best_score >= max(self.iou_threshold, 0.35)
+        is_occupied = has_spatial_evidence and best_score >= self.iou_threshold
         status = "OCCUPIED" if is_occupied else "AVAILABLE"
         confidence = round(best_conf if is_occupied else max(0.0, 1.0 - best_score), 2)
 

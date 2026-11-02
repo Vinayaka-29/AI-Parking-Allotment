@@ -23,7 +23,7 @@ from app.cameras import active_camera, camera_metadata
 from app.calibration.auto_calibrator import AutoCalibrator
 from app.calibration.profile_store import CalibrationProfileStore, build_fingerprint
 from app.calibration.scene_monitor import SceneMonitor
-from app.vision.parking_space_proposals import infer_parking_spaces
+from app.vision.parking_space_proposals import infer_parking_spaces, validate_proposals
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,11 @@ class ParkingService:
             "image_width": profile.get("frame_width"),
             "image_height": profile.get("frame_height"),
             "slots": [
-                {**slot, "camera_id": self.camera.camera_id,
+                {**slot,
+                 "status": slot.get("status")
+                 if slot.get("status") in {"AVAILABLE", "OCCUPIED", "RESERVED", "UNKNOWN", "CONFLICT"}
+                 else "AVAILABLE",
+                 "camera_id": self.camera.camera_id,
                  "calibration_size": [profile.get("frame_width"), profile.get("frame_height")]}
                 for slot in profile.get("polygons", [])
             ],
@@ -205,6 +209,12 @@ class ParkingService:
         inference_time_ms = round((time.time() - start_time) * 1000, 1)
 
         proposal = infer_parking_spaces(frame_bgr, detections)
+        proposal_validation = validate_proposals(
+            proposal.proposals,
+            w,
+            h,
+            frame=frame_bgr,
+        )
         slots = [
             {
                 **slot,
@@ -213,7 +223,9 @@ class ParkingService:
             }
             for slot in proposal.proposals
         ]
-        inferred = bool(slots)
+        inferred = bool(slots) and proposal_validation.get("eligible", False)
+        if not inferred:
+            slots = []
 
         if inferred:
             occupancy = []
@@ -283,7 +295,8 @@ class ParkingService:
                     float(np.mean([slot.get("confidence", 0.0) for slot in result_slots] or [0.0])),
                     3,
                 ),
-                "requires_review": inferred,
+                "requires_review": bool(proposal.proposals) and not inferred,
+                "validation": proposal_validation,
             },
             "inference_time_ms": inference_time_ms,
             "processing_budget_seconds": self._settings.upload_timeout_s,
@@ -545,7 +558,58 @@ class ParkingService:
             self.calibration_status = self.auto_calibrator.status
             self.calibration_message = self.auto_calibrator.message
             if proposal and proposal.get("status") == "PROPOSED":
-                self._save_proposal(proposal, frame)
+                self._activate_automatic_proposal(proposal, frame)
+
+    def _activate_automatic_proposal(self, proposal: dict[str, Any], frame: np.ndarray) -> None:
+        """Persist a validated live proposal and make it active for the next frame."""
+        polygons = proposal.get("polygons", [])
+        validation = proposal.get("quality", {}).get("validation")
+        if validation is None:
+            validation = validate_proposals(polygons, frame.shape[1], frame.shape[0])
+        if not validation.get("eligible") or validation.get("confidence") != "HIGH":
+            self.calibration_status = "NEEDS_CALIBRATION"
+            reasons = validation.get("issues", [])
+            self.calibration_message = (
+                "Automatic calibration needs more reliable geometry"
+                + (f": {'; '.join(reasons[:2])}" if reasons else "; collecting more frames")
+            )
+            logger.warning(
+                "Rejected automatic calibration for %s: %s",
+                self.camera.camera_id,
+                validation,
+            )
+            proposal["quality"] = {**proposal.get("quality", {}), "validation": validation}
+            self._save_proposal(proposal, frame)
+            return
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            profile = self.profile_store.save({
+                "camera_id": self.camera.camera_id,
+                "camera_url_hash": self.profile_store.url_hash(self.camera.url),
+                "frame_width": frame.shape[1],
+                "frame_height": frame.shape[0],
+                "polygons": polygons,
+                "status": "CONFIRMED",
+                "created_at": now,
+                "confirmed_at": now,
+                "source": "auto",
+                "scene_fingerprint": None,
+                "quality": proposal.get("quality", {}),
+                "version": 0,
+            }, reference=frame, fingerprint=build_fingerprint(frame))
+            self._apply_profile(profile)
+            self.calibration_message = (
+                f"Automatically calibrated {len(polygons)} bays; YOLO occupancy is now active."
+            )
+            logger.info(
+                "Automatically activated calibration for %s with %d bays",
+                self.camera.camera_id,
+                len(polygons),
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            self.calibration_status = "NEEDS_CALIBRATION"
+            self.calibration_message = f"Automatic calibration could not be saved: {exc}"
+            logger.exception("Automatic calibration activation failed")
 
     def _check_scene(self, frame: np.ndarray) -> None:
         now = time.time()
@@ -598,12 +662,22 @@ class ParkingService:
     def start_calibration(self) -> None:
         self.auto_calibrator.reset()
         self.calibration_status = "CALIBRATING"
-        self.calibration_message = "Analyzing perspective and vehicle lattice..."
+        self.calibration_message = "Analyzing multiple camera frames for parking boundaries..."
         self.state_manager.mark_camera_unknown()
         if self._last_calibration_frame is not None:
             self.auto_calibrate_image()
 
     def _save_proposal(self, proposal: dict[str, Any], frame: np.ndarray) -> None:
+        existing = self.profile_store.load_validated(
+            self.camera.camera_id,
+            self.camera.url,
+        )
+        if existing and existing.get("status") == "CONFIRMED":
+            logger.info(
+                "Keeping confirmed profile for %s; rejected proposal was not persisted over it",
+                self.camera.camera_id,
+            )
+            return
         self.profile_store.save({
             "camera_id": self.camera.camera_id,
             "camera_url_hash": self.profile_store.url_hash(self.camera.url),
@@ -620,11 +694,19 @@ class ParkingService:
         }, reference=frame, fingerprint=build_fingerprint(frame))
 
     def calibration_status_payload(self) -> dict[str, Any]:
+        quality = self.auto_calibrator.proposal.get("quality", {}) if self.auto_calibrator.proposal else {}
         return {
             "status": self.calibration_status,
-            "progress": {"cycles_done": self.auto_calibrator.cycles_done, "cycles_total": self.auto_calibrator.total_cycles},
-            "parked_candidates": self.auto_calibrator.proposal.get("quality", {}).get("parked_candidates", 0)
+            "progress": {
+                "cycles_done": self.auto_calibrator.cycles_done,
+                "cycles_total": self.auto_calibrator.total_cycles,
+                "frames_analyzed": self.auto_calibrator.frames_analyzed,
+                "candidate_spaces": len(self.auto_calibrator.proposal.get("polygons", []))
                 if self.auto_calibrator.proposal else 0,
+                "validated_spaces": quality.get("validation", {}).get("valid_count", 0),
+                "confidence": quality.get("confidence", "LOW"),
+            },
+            "parked_candidates": quality.get("parked_candidates", 0),
             "message": self.calibration_message,
             "camera_id": self.camera.camera_id,
         }
@@ -651,24 +733,42 @@ class ParkingService:
     def confirm_calibration(self, slots: list[dict[str, Any]]) -> dict[str, Any]:
         if not slots:
             raise ValueError("At least one slot is required")
+        normalized_slots = []
         for slot in slots:
             polygon = slot.get("polygon", [])
             if len(polygon) < 4 or any(len(point) != 2 or any(float(value) < 0 or float(value) > 1 for value in point) for point in polygon):
                 raise ValueError(f"Invalid normalized polygon for {slot.get('slot_id', 'unknown')}")
+            normalized_slots.append({
+                **slot,
+                "confidence": float(slot.get("confidence", 0.95)),
+                "evidence": slot.get("evidence", "manual"),
+            })
         frame = self._last_calibration_frame
         width = frame.shape[1] if frame is not None else 1920
         height = frame.shape[0] if frame is not None else 1080
+        validation = validate_proposals(
+            normalized_slots,
+            width,
+            height,
+            frame=frame,
+        )
+        if not validation.get("eligible"):
+            raise ValueError(
+                "Calibration layout failed validation: "
+                + "; ".join(validation.get("issues", [])[:3])
+            )
         now = datetime.now(timezone.utc).isoformat()
         profile = self.profile_store.save({
             "camera_id": self.camera.camera_id,
             "camera_url_hash": self.profile_store.url_hash(self.camera.url),
             "frame_width": width,
             "frame_height": height,
-            "polygons": slots,
+            "polygons": normalized_slots,
             "status": "CONFIRMED",
             "created_at": now,
             "confirmed_at": now,
             "source": "manual",
+            "quality": {"confidence": validation["confidence"], "validation": validation},
             "scene_fingerprint": None,
             "version": 0,
         }, reference=frame, fingerprint=build_fingerprint(frame) if frame is not None else None)

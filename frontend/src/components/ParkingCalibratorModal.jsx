@@ -18,6 +18,7 @@ export default function ParkingCalibratorModal({
   const [imageBounds, setImageBounds] = useState(null)
   const [calibrationImageUrl, setCalibrationImageUrl] = useState(imageUrl)
   const [calibrationMessage, setCalibrationMessage] = useState('')
+  const [calibrationProgress, setCalibrationProgress] = useState(null)
   const [isAutoCalibrating, setIsAutoCalibrating] = useState(false)
 
   const containerRef = useRef(null)
@@ -218,6 +219,7 @@ export default function ParkingCalibratorModal({
           const response = await fetch(`${apiBase}/calibration/status`)
           status = await response.json()
           attempts++
+          setCalibrationProgress(status.progress || null)
           setCalibrationMessage(status.message || `${status.status} ${status.progress?.cycles_done || 0}/${status.progress?.cycles_total || 0}`)
         } while (status.status === 'CALIBRATING' && attempts < 10)
         const proposalResponse = await fetch(`${apiBase}/calibration/proposal`)
@@ -348,7 +350,9 @@ export default function ParkingCalibratorModal({
         </div>
 
         <div className="calibrator-instruction-banner">
-          <span>💡 <strong>HOW TO CALIBRATE:</strong> Use "AUTO-DETECT SLOTS" or "AUTO-FIT GRID", or click and drag directly on the parking lot image to draw custom stalls. Click ✕ on any bay to remove. {calibrationMessage}</span>
+          <span>💡 <strong>HOW TO CALIBRATE:</strong> Use "AUTO-DETECT SLOTS" or "AUTO-FIT GRID", or click and drag directly on the parking lot image to draw custom stalls. Click ✕ on any bay to remove. {calibrationMessage}
+            {calibrationProgress && ` Frames: ${calibrationProgress.frames_analyzed || 0}, candidates: ${calibrationProgress.candidate_spaces || 0}, validated: ${calibrationProgress.validated_spaces || 0}, confidence: ${calibrationProgress.confidence || 'LOW'}.`}
+          </span>
         </div>
 
         {/* Interactive Viewport Canvas */}

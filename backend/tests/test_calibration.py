@@ -15,18 +15,17 @@ def _detection(x: float, y: float) -> VehicleDetection:
     return VehicleDetection(confidence=0.9, bbox=[x, y, x + 40, y + 24])
 
 
-def test_auto_calibrator_finds_rows_and_empty_gaps():
+def test_auto_calibrator_rejects_vehicle_only_rows():
     frame = np.zeros((400, 800, 3), dtype=np.uint8)
     calibrator = AutoCalibrator(total_cycles=40, min_parked=3)
     stationary = [_detection(100, 100), _detection(300, 100), _detection(500, 100),
                   _detection(100, 260), _detection(300, 260), _detection(500, 260)]
     for _ in range(40):
         proposal = calibrator.update(stationary + [_detection(20 + _, 30)], frame)
-    assert proposal["status"] == "PROPOSED"
-    assert proposal["quality"]["number_of_rows"] == 2
+    assert proposal["status"] == "NEEDS_MORE_DATA"
+    assert proposal["quality"]["number_of_rows"] == 0
     assert proposal["quality"]["parked_candidates"] >= 6
-    assert proposal["quality"]["inferred_slots"] >= 0
-    assert len(proposal["polygons"]) >= 6
+    assert proposal["polygons"] == []
 
 
 def test_auto_calibrator_needs_more_data():

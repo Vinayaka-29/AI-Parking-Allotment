@@ -92,7 +92,7 @@ class SnapshotCameraSource(CameraSource):
         "Pragma": "no-cache",
     }
 
-    def __init__(self, url: str, camera_id: str = "CAM_ASAHI_JP", timeout: int = 5) -> None:
+    def __init__(self, url: str, camera_id: str = "CAM_ASAHI_JP", timeout: int = 20) -> None:
         super().__init__(camera_id)
         self.url = url
         self.timeout = timeout

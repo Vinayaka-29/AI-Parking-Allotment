@@ -6,7 +6,11 @@ from typing import Any
 import cv2
 import numpy as np
 
-from app.vision.parking_space_proposals import infer_parking_spaces, propose_parking_spaces
+from app.vision.parking_space_proposals import (
+    infer_parking_spaces,
+    suppress_duplicate_proposals,
+    validate_proposals,
+)
 
 
 def _iou(first: list[float], second: list[float]) -> float:
@@ -41,6 +45,10 @@ class AutoCalibrator:
         self.proposal: dict[str, Any] | None = None
         self.message = "Waiting for live frames"
         self.status = "IDLE"
+        self.frames_analyzed = 0
+        self._frame_signature: tuple[Any, ...] | None = None
+        self.last_validation: dict[str, Any] = {}
+        self._frame_proposals: list[tuple[np.ndarray, list[dict[str, Any]]]] = []
 
     def calibrate_instant(self, frame: np.ndarray, detections: list[Any]) -> dict[str, Any]:
         """One-shot instant perspective calibration from a single frame or uploaded image."""
@@ -59,6 +67,7 @@ class AutoCalibrator:
             }
         else:
             sections = set(slot.get("section_id", "A") for slot in result.proposals)
+            validation = validate_proposals(result.proposals, width, height, frame=frame)
             proposal = {
                 "status": "PROPOSED",
                 "message": f"Proposed {len(result.proposals)} perspective-calibrated bays across {len(sections)} sections.",
@@ -68,24 +77,60 @@ class AutoCalibrator:
                     "parked_candidates": len(detections),
                     "inferred_slots": sum(slot.get("evidence") == "inferred-empty" for slot in result.proposals),
                     "coverage": 1.0,
-                    "requires_review": False,
+                    "confidence": validation["confidence"],
+                    "validation": validation,
+                    "requires_review": not validation["eligible"],
                 },
                 "image_width": width,
                 "image_height": height,
             }
 
         self.proposal = proposal
+        self.last_validation = proposal.get("quality", {}).get("validation", {})
         self.status = proposal["status"]
         self.message = proposal["message"]
         self.cycles_done = self.total_cycles
         return self.proposal
 
     def update(self, detections: list[Any], frame: np.ndarray) -> dict[str, Any] | None:
+        if not isinstance(frame, np.ndarray) or frame.ndim not in (2, 3) or frame.size == 0:
+            self.status = "NEEDS_MORE_DATA"
+            self.message = "Camera frame is invalid or unavailable"
+            return None
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        detection_signature = tuple(
+            tuple(round(float(value), 1) for value in self._bbox(detection)[:4])
+            for detection in detections
+            if self._bbox(detection)
+        )
+        signature = (
+            frame.shape[1],
+            frame.shape[0],
+            int(cv2.mean(gray)[0] * 100),
+            detection_signature,
+        )
+        if signature == self._frame_signature:
+            if self.cycles_done >= self.total_cycles - 1:
+                self.cycles_done = self.total_cycles
+                self.proposal = self._build_proposal(frame, detections)
+                self.status = self.proposal["status"]
+                self.message = "No new camera frame arrived; calibration requires additional visual evidence."
+                self.proposal["message"] = self.message
+                self.last_validation = self.proposal.get("quality", {}).get("validation", {})
+                return self.proposal
+            self.message = f"Waiting for a new camera frame ({self.frames_analyzed}/{self.total_cycles})"
+            return None
+        self._frame_signature = signature
+        self.frames_analyzed += 1
         if self.cycles_done == 0:
             self.reference_frame = frame.copy()
             self.status = "CALIBRATING"
         self.cycles_done = min(self.total_cycles, self.cycles_done + 1)
         boxes = [list(map(float, self._bbox(det))) for det in detections if self._bbox(det)]
+        frame_result = infer_parking_spaces(frame, detections)
+        if frame_result.proposals:
+            self._frame_proposals.append((frame.copy(), frame_result.proposals))
+            self._frame_proposals = self._frame_proposals[-8:]
         matched: set[int] = set()
         for track in self.tracks:
             best_index, best_score = None, 0.0
@@ -113,6 +158,7 @@ class AutoCalibrator:
         self.proposal = self._build_proposal(frame, detections)
         self.status = self.proposal["status"]
         self.message = self.proposal["message"]
+        self.last_validation = self.proposal.get("quality", {}).get("validation", {})
         return self.proposal
 
     @staticmethod
@@ -130,17 +176,33 @@ class AutoCalibrator:
             for track in self.tracks if track.hits >= 1
         ]
         result = infer_parking_spaces(frame, det_candidates)
-        if result.proposals:
-            sections = set(slot.get("section_id", "A") for slot in result.proposals)
+        candidate_sets = [proposals for _, proposals in self._frame_proposals]
+        if candidate_sets:
+            merged = suppress_duplicate_proposals(
+                [proposal for proposals in candidate_sets for proposal in proposals],
+                iou_threshold=0.55,
+            )
+            if len(merged) >= len(result.proposals):
+                result_proposals = merged
+            else:
+                result_proposals = result.proposals
+        else:
+            result_proposals = result.proposals
+        if result_proposals:
+            sections = set(slot.get("section_id", "A") for slot in result_proposals)
+            validation = validate_proposals(result_proposals, width, height, frame=frame)
             return {
                 "status": "PROPOSED",
-                "message": f"Proposed {len(result.proposals)} perspective slots across {len(sections)} rows.",
-                "polygons": result.proposals,
+                "message": f"Proposed {len(result_proposals)} perspective slots across {len(sections)} rows.",
+                "polygons": result_proposals,
                 "quality": {
                     "number_of_rows": len(sections),
                     "parked_candidates": len(self.tracks),
-                    "inferred_slots": sum(slot.get("evidence") == "inferred-empty" for slot in result.proposals),
+                    "inferred_slots": sum(slot.get("evidence") == "inferred-empty" for slot in result_proposals),
                     "coverage": 1.0,
+                    "confidence": validation["confidence"],
+                    "validation": validation,
+                    "requires_review": not validation["eligible"],
                 },
                 "image_width": width,
                 "image_height": height,

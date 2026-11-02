@@ -119,7 +119,11 @@ class DetectionWorker:
                     detections,
                     image_shape=camera_frame.frame.shape[:2],
                 )
-                annotated = self.detector.annotate_frame(camera_frame.frame, detections)
+                annotated = self.detector.annotate_frame(
+                    camera_frame.frame,
+                    detections,
+                    self.state_manager.get_slots(),
+                )
                 success, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
                 if not success:
                     raise DetectorInferenceError("failed to encode annotated frame")
