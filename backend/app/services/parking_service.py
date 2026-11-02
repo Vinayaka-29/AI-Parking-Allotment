@@ -194,28 +194,26 @@ class ParkingService:
         img_np = np.array(image)
         frame_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
         h, w = frame_bgr.shape[:2]
+        self._last_calibration_frame = frame_bgr.copy()
 
         start_time = time.time()
         detections = self.detector.detect(
             frame_bgr,
-            conf_threshold=0.15,
+            conf_threshold=0.18,
             imgsz=self._settings.upload_detect_imgsz,
         )
         inference_time_ms = round((time.time() - start_time) * 1000, 1)
 
-        slots = self.state_manager.get_slots()
-        inferred = False
-        if not slots:
-            proposal = infer_parking_spaces(frame_bgr, detections)
-            slots = [
-                {
-                    **slot,
-                    "camera_id": self.camera.camera_id,
-                    "calibration_size": [w, h],
-                }
-                for slot in proposal.proposals
-            ]
-            inferred = bool(slots)
+        proposal = infer_parking_spaces(frame_bgr, detections)
+        slots = [
+            {
+                **slot,
+                "camera_id": self.camera.camera_id,
+                "calibration_size": [w, h],
+            }
+            for slot in proposal.proposals
+        ]
+        inferred = bool(slots)
 
         if inferred:
             occupancy = []
@@ -224,11 +222,29 @@ class ParkingService:
                     slot, detections, image_shape=(h, w)
                 )
                 enriched = dict(slot)
+                evidence = slot.get("evidence", "")
+                # For gaps inferred by the proposal engine (no vehicle present), we
+                # check if any vehicle's *center* truly falls inside the slot polygon
+                # instead of relying on IoU / anchor overlap which can be triggered
+                # by neighbouring vehicles that merely clip the gap slot boundary.
+                if evidence == "vehicle-gap":
+                    status = self._gap_slot_status(slot, detections, (h, w))
+                    confidence = 0.85 if status == "AVAILABLE" else 0.70
+                    vehicle_id = None
+                elif result["status"] != "UNKNOWN":
+                    status = result["status"]
+                    confidence = result["confidence"]
+                    vehicle_id = result.get("vehicle_id")
+                else:
+                    # Engine uncertain — fall back to evidence
+                    status = "OCCUPIED"
+                    confidence = 0.7
+                    vehicle_id = None
                 enriched.update({
-                    "status": result["status"],
-                    "physical_status": result["status"],
-                    "confidence": result["confidence"],
-                    "vehicle_id": result.get("vehicle_id"),
+                    "status": status,
+                    "physical_status": status,
+                    "confidence": confidence,
+                    "vehicle_id": vehicle_id,
                 })
                 occupancy.append(enriched)
             result_slots = occupancy
@@ -301,6 +317,46 @@ class ParkingService:
         return self._stream_placeholder or b""
 
     # ─── Slot polygon overlay ──────────────────────────────────────────────────
+
+    def _gap_slot_status(
+        self, slot: dict, detections: list, image_shape: tuple
+    ) -> str:
+        """For an inferred-empty gap slot, mark OCCUPIED only when a vehicle's
+        bottom-centre anchor lies inside the slot polygon AND the vehicle's
+        bottom-y falls in the lower 70% of the slot height.  This prevents
+        vehicles in an adjacent (higher) row from falsely claiming the slot
+        because perspective projection puts their tops near the gap boundary."""
+        import cv2 as _cv2
+        import numpy as _np
+        raw_poly = slot.get("polygon", [])
+        if not raw_poly or len(raw_poly) < 3:
+            return "AVAILABLE"
+        h, w = image_shape
+        poly_px = _np.array(
+            [[pt[0] * w, pt[1] * h] for pt in raw_poly], dtype=_np.float32
+        )
+        # Slot y-bounds in pixels
+        slot_ys = [pt[1] * h for pt in raw_poly]
+        slot_y_min = min(slot_ys)
+        slot_y_max = max(slot_ys)
+        slot_height = max(1.0, slot_y_max - slot_y_min)
+        # Only a vehicle whose bottom falls in the lower 70% of the slot height
+        # is considered to belong to this row (not a vehicle in an adjacent row).
+        row_threshold_y = slot_y_min + slot_height * 0.30
+        for det in detections:
+            bbox = getattr(det, "bbox", None) or (det.get("bbox") if isinstance(det, dict) else None)
+            if not bbox or len(bbox) < 4:
+                continue
+            vx1, vy1, vx2, vy2 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+            # Skip vehicles from a row above (their bottom is above our threshold)
+            if vy2 < row_threshold_y:
+                continue
+            # Use the vehicle bottom-centre as the anchor point
+            anchor_x = (vx1 + vx2) / 2.0
+            anchor_y = vy2 - (vy2 - vy1) * 0.15
+            if _cv2.pointPolygonTest(poly_px, (anchor_x, anchor_y), False) >= 0:
+                return "OCCUPIED"
+        return "AVAILABLE"
 
     def _draw_slot_overlays(self, frame: np.ndarray) -> np.ndarray:
         """Draw calibrated parking slot polygons on the live frame."""
@@ -514,11 +570,38 @@ class ParkingService:
             self.profile_store.save(profile, reference=frame, fingerprint=build_fingerprint(frame))
             self._apply_profile(profile)
 
+    def auto_calibrate_image(self, file_bytes: bytes | None = None) -> dict[str, Any]:
+        """One-shot auto-calibration from an image or current camera frame."""
+        if file_bytes:
+            image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+            frame_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        elif self._last_calibration_frame is not None:
+            frame_bgr = self._last_calibration_frame.copy()
+        elif self._camera_worker and self._camera_worker.latest():
+            vf = self._camera_worker.latest()
+            frame_bgr = vf.frame.copy() if vf else None
+        else:
+            frame_bgr = None
+
+        if frame_bgr is None:
+            return {"status": "NO_FRAME", "message": "No frame available for calibration", "polygons": [], "quality": {}}
+
+        self._last_calibration_frame = frame_bgr.copy()
+        detections = self.detector.detect(frame_bgr, conf_threshold=0.18, imgsz=self._settings.upload_detect_imgsz)
+        proposal = self.auto_calibrator.calibrate_instant(frame_bgr, detections)
+        self.calibration_status = proposal["status"]
+        self.calibration_message = proposal["message"]
+        if proposal.get("status") == "PROPOSED":
+            self._save_proposal(proposal, frame_bgr)
+        return self.calibration_proposal()
+
     def start_calibration(self) -> None:
         self.auto_calibrator.reset()
         self.calibration_status = "CALIBRATING"
-        self.calibration_message = "Waiting for live frames"
+        self.calibration_message = "Analyzing perspective and vehicle lattice..."
         self.state_manager.mark_camera_unknown()
+        if self._last_calibration_frame is not None:
+            self.auto_calibrate_image()
 
     def _save_proposal(self, proposal: dict[str, Any], frame: np.ndarray) -> None:
         self.profile_store.save({

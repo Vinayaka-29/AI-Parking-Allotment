@@ -194,24 +194,41 @@ export default function ParkingCalibratorModal({
   // Save layout
   const handleAutoDetect = async () => {
     setIsAutoCalibrating(true)
-    setCalibrationMessage('CALIBRATING 0/40')
+    setCalibrationMessage('CALIBRATING PERSPECTIVE & SLOTS...')
     try {
-      const start = await fetch(`${apiBase}/calibration/start`, { method: 'POST' })
-      if (!start.ok) throw new Error('Unable to start auto-calibration')
-      let status
-      do {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-        const response = await fetch(`${apiBase}/calibration/status`)
-        status = await response.json()
-        setCalibrationMessage(status.message || `${status.status} ${status.progress?.cycles_done || 0}/${status.progress?.cycles_total || 0}`)
-      } while (status.status === 'CALIBRATING')
-      const proposalResponse = await fetch(`${apiBase}/calibration/proposal`)
-      const proposal = await proposalResponse.json()
-      if (proposal.status !== 'PROPOSED') throw new Error(proposal.message || 'No reliable slot proposal')
+      let proposal = null
+      // 1. Try instant auto-detect endpoint
+      try {
+        const res = await fetch(`${apiBase}/calibration/auto-detect`, { method: 'POST' })
+        if (res.ok) {
+          proposal = await res.json()
+        }
+      } catch (err) {
+        console.warn('Instant auto-detect API call failed, trying standard flow...', err)
+      }
+
+      // 2. Fallback to start / proposal flow if needed
+      if (!proposal || proposal.status !== 'PROPOSED') {
+        const start = await fetch(`${apiBase}/calibration/start`, { method: 'POST' })
+        if (!start.ok) throw new Error('Unable to start auto-calibration')
+        let status
+        let attempts = 0
+        do {
+          await new Promise(resolve => setTimeout(resolve, 600))
+          const response = await fetch(`${apiBase}/calibration/status`)
+          status = await response.json()
+          attempts++
+          setCalibrationMessage(status.message || `${status.status} ${status.progress?.cycles_done || 0}/${status.progress?.cycles_total || 0}`)
+        } while (status.status === 'CALIBRATING' && attempts < 10)
+        const proposalResponse = await fetch(`${apiBase}/calibration/proposal`)
+        proposal = await proposalResponse.json()
+      }
+
+      if (proposal.status !== 'PROPOSED') throw new Error(proposal.message || 'No reliable slot proposal found')
       hasEditedLayoutRef.current = true
       setSlots(proposal.polygons || [])
       if (proposal.reference_jpeg) setCalibrationImageUrl(`data:image/jpeg;base64,${proposal.reference_jpeg}`)
-      setCalibrationMessage(`${proposal.status}: ${proposal.quality?.number_of_rows || 0} rows, ${proposal.polygons?.length || 0} slots`)
+      setCalibrationMessage(`CALIBRATED: ${proposal.quality?.number_of_rows || 0} rows, ${proposal.polygons?.length || 0} slots`)
     } catch (error) {
       setCalibrationMessage(error.message)
     } finally {

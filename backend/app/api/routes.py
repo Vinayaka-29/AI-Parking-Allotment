@@ -198,6 +198,15 @@ async def system() -> dict:
     return parking_service.get_system_status()
 
 
+@router.post("/calibration/auto-detect")
+async def calibration_auto_detect(file: Optional[UploadFile] = File(None)) -> dict:
+    """Run instant perspective layout auto-calibration (< 2s)."""
+    content = None
+    if file is not None:
+        content = await file.read()
+    return parking_service.auto_calibrate_image(content)
+
+
 @router.post("/calibration/start")
 async def calibration_start() -> dict:
     parking_service.start_calibration()

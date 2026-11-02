@@ -13,7 +13,7 @@ export function useParkingAnalysis() {
   const { state, dispatch } = useParkingState()
   const abortRef = useRef(null)
 
-  const candidateUrls = [...new Set([API_BASE])]
+  const candidateUrls = [...new Set([API_BASE, 'http://localhost:8000/api', 'http://127.0.0.1:8000/api', 'http://localhost:8000', 'http://127.0.0.1:8000'].filter(Boolean))]
 
   /**
    * Upload an image and prepare it for analysis.
@@ -32,7 +32,7 @@ export function useParkingAnalysis() {
    * Simulate analysis progress steps with delays for UX
    */
   const runProgressSteps = useCallback(async () => {
-    const stepDelays = [400, 600, 500, 400, 300]
+    const stepDelays = [40, 50, 40, 40, 30]
     for (let i = 0; i < stepDelays.length; i++) {
       await new Promise(r => setTimeout(r, stepDelays[i]))
       dispatch({

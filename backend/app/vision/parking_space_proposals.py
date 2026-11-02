@@ -1,7 +1,8 @@
-"""OpenCV parking-space proposals from visible geometric markings.
+"""OpenCV & geometric parking-space proposals with perspective and row inference.
 
-This module is deliberately independent from vehicle detection and occupancy
-state. Proposals are unverified until a caller reviews and saves them.
+Detects vehicle rows, estimates perspective vanishing geometry, extracts line dividers,
+interpolates empty bays between parked vehicles, and produces perspective-aligned
+quadrilateral slot polygons.
 """
 
 from __future__ import annotations
@@ -28,124 +29,64 @@ class ParkingSpaceProposalResult:
         }
 
 
-def infer_vehicle_slots(
+def _extract_slanted_lines(frame: np.ndarray) -> list[tuple[float, float, float]]:
+    """Extract stall divider line segments and their perspective slants (dx_per_dy)."""
+    if frame is None or frame.size == 0:
+        return []
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    white_mask = cv2.inRange(hsv, np.array([0, 0, 160]), np.array([180, 60, 255]))
+    yellow_mask = cv2.inRange(hsv, np.array([15, 80, 150]), np.array([35, 255, 255]))
+    combined_mask = cv2.bitwise_or(white_mask, yellow_mask)
+
+    edges = cv2.Canny(combined_mask, 50, 150)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=25, minLineLength=20, maxLineGap=12)
+
+    slanted_lines: list[tuple[float, float, float]] = []
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            length = float(np.hypot(x2 - x1, y2 - y1))
+            if length >= 20.0:
+                angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+                if 45.0 <= angle <= 135.0:
+                    top_x, top_y = (x1, y1) if y1 < y2 else (x2, y2)
+                    bot_x, bot_y = (x2, y2) if y1 < y2 else (x1, y1)
+                    dy = bot_y - top_y
+                    if dy >= 15.0:
+                        dx_per_dy = (top_x - bot_x) / dy
+                        slanted_lines.append((float(bot_x), float(bot_y), float(dx_per_dy)))
+    return slanted_lines
+
+
+def _get_perspective_slant(
+    x: float,
+    y: float,
+    width: int,
+    height: int,
+    slanted_lines: list[tuple[float, float, float]],
+) -> float:
+    """Compute how much X shifts toward top per 1px dy at (x, y) under perspective."""
+    if slanted_lines:
+        weights = [1.0 / ((np.hypot(x - lx, y - ly) + 1.0) ** 2) for lx, ly, _ in slanted_lines]
+        total_w = sum(weights)
+        if total_w > 0:
+            return float(sum(s * w for (_, _, s), w in zip(slanted_lines, weights)) / total_w)
+
+    vx, vy = width * 0.52, -height * 0.55
+    dy = y - vy
+    return float((vx - x) / dy) if dy > 0 else 0.0
+
+
+def infer_parking_spaces(
     frame: np.ndarray,
     detections: list[Any],
     *,
     min_detections_per_row: int = 2,
-) -> list[dict[str, Any]]:
-    """Infer rectangular bays from vehicle centers and the gaps between them.
-
-    This is deliberately conservative: a row needs at least two vehicles so
-    the observed spacing provides evidence for an unmarked bay.
-    """
-    if not isinstance(frame, np.ndarray) or frame.ndim not in (2, 3):
-        return []
-    height, width = frame.shape[:2]
-    boxes: list[list[float]] = []
-    for detection in detections:
-        bbox = getattr(detection, "bbox", None)
-        if bbox is None and isinstance(detection, dict):
-            bbox = detection.get("bbox")
-        if bbox is None or len(bbox) < 4:
-            continue
-        x1, y1, x2, y2 = map(float, bbox[:4])
-        if x2 > x1 and y2 > y1:
-            boxes.append([x1, y1, x2, y2])
-    if len(boxes) < min_detections_per_row:
-        return []
-
-    median_height = float(np.median([box[3] - box[1] for box in boxes]))
-    row_tolerance = max(24.0, median_height * 1.5)
-    rows: list[list[list[float]]] = []
-    for box in sorted(boxes, key=lambda item: (item[1] + item[3], item[0])):
-        center_y = (box[1] + box[3]) / 2.0
-        row = next(
-            (candidate for candidate in rows
-             if abs((candidate[0][1] + candidate[0][3]) / 2.0 - center_y) <= row_tolerance),
-            None,
-        )
-        if row is None:
-            rows.append([box])
-        else:
-            row.append(box)
-
-    proposals: list[dict[str, Any]] = []
-    for row_index, row in enumerate(rows):
-        if len(row) < min_detections_per_row:
-            continue
-        row.sort(key=lambda item: (item[0] + item[2]) / 2.0)
-        centers = np.asarray([(box[0] + box[2]) / 2.0 for box in row], dtype=np.float32)
-        widths = np.asarray([box[2] - box[0] for box in row], dtype=np.float32)
-        heights = np.asarray([box[3] - box[1] for box in row], dtype=np.float32)
-        gaps = np.diff(centers)
-        valid_gaps = gaps[gaps >= max(float(np.median(widths)) * 1.2, 8.0)]
-        if not len(valid_gaps):
-            continue
-        pitch = float(np.median(valid_gaps))
-        bay_width = float(np.clip(np.median(widths) * 1.35, pitch * 0.55, pitch * 0.95))
-        bay_height = float(np.median(heights) * 1.45)
-        y_center = float(np.median([(box[1] + box[3]) / 2.0 for box in row]))
-        start = max(bay_width / 2.0, float(centers[0]))
-        end = min(width - bay_width / 2.0, float(centers[-1]))
-        count = max(1, int(round((end - start) / pitch)) + 1)
-        for slot_index in range(count):
-            center_x = start + slot_index * pitch
-            nearest_distance = float(np.min(np.abs(centers - center_x)))
-            occupied = nearest_distance <= pitch * 0.35
-            x1 = max(0.0, center_x - bay_width / 2.0)
-            x2 = min(float(width), center_x + bay_width / 2.0)
-            y1 = max(0.0, y_center - bay_height / 2.0)
-            y2 = min(float(height), y_center + bay_height / 2.0)
-            proposals.append({
-                "slot_id": f"{chr(65 + row_index)}{slot_index + 1:02d}",
-                "section_id": chr(65 + row_index),
-                "polygon": [[round(x1 / width, 6), round(y1 / height, 6)],
-                            [round(x2 / width, 6), round(y1 / height, 6)],
-                            [round(x2 / width, 6), round(y2 / height, 6)],
-                            [round(x1 / width, 6), round(y2 / height, 6)]],
-                "type": "STANDARD",
-                "priority": 1,
-                "distance_from_entries": round((slot_index + 1) * 3 + row_index * 10, 2),
-                "confidence": 0.78 if occupied else 0.66,
-                "evidence": "vehicle-row" if occupied else "vehicle-gap",
-                "status": "NEEDS_REVIEW",
-            })
-    return proposals
-
-
-def infer_parking_spaces(frame: np.ndarray, detections: list[Any]) -> ParkingSpaceProposalResult:
-    """Combine line evidence and vehicle-row geometry for both input modes."""
-    line_result = propose_parking_spaces(frame)
-    vehicle_proposals = infer_vehicle_slots(frame, detections)
-    combined = list(vehicle_proposals)
-    for candidate in line_result.proposals:
-        if not any(_polygon_iou(candidate["polygon"], slot["polygon"]) >= 0.4 for slot in combined):
-            line_candidate = dict(candidate)
-            line_candidate["slot_id"] = f"L{len(combined) + 1:02d}"
-            line_candidate["section_id"] = "L"
-            line_candidate["evidence"] = "line-only"
-            combined.append(line_candidate)
-    return ParkingSpaceProposalResult(
-        "PROPOSALS_FOUND" if combined else "NO_PROPOSALS",
-        line_result.image_width,
-        line_result.image_height,
-        combined,
-    )
-
-
-def propose_parking_spaces(
-    frame: np.ndarray,
-    *,
-    min_area_ratio: float = 0.002,
-    max_area_ratio: float = 0.35,
-    duplicate_iou: float = 0.85,
 ) -> ParkingSpaceProposalResult:
-    """Propose quadrilateral bays supported by bright closed line geometry.
+    """Infers parking bays, perspective geometry, and empty spaces from vehicles and lines.
 
-    The detector does not inspect YOLO detections and never fills gaps with a
-    generated grid. A frame with insufficient geometric evidence returns no
-    proposals.
+    Works even when parking lines are missing by using vehicle footprint lattice grid
+    and vanishing perspective modeling.
     """
     if not isinstance(frame, np.ndarray) or frame.ndim not in (2, 3):
         return ParkingSpaceProposalResult("NO_PROPOSALS", 0, 0, [])
@@ -154,49 +95,224 @@ def propose_parking_spaces(
     if width < 1 or height < 1:
         return ParkingSpaceProposalResult("NO_PROPOSALS", width, height, [])
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-    _, bright = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY)
-    kernel = np.ones((3, 3), dtype=np.uint8)
-    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, kernel, iterations=1)
-
-    contours, _ = cv2.findContours(bright, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    candidates: list[dict[str, Any]] = []
-    image_area = float(width * height)
-
-    for contour in contours:
-        perimeter = cv2.arcLength(contour, True)
-        if perimeter <= 0:
+    boxes: list[dict[str, Any]] = []
+    for detection in detections:
+        bbox = getattr(detection, "bbox", None)
+        if bbox is None and isinstance(detection, dict):
+            bbox = detection.get("bbox")
+        if bbox is None or len(bbox) < 4:
             continue
-        polygon = cv2.approxPolyDP(contour, 0.04 * perimeter, True).reshape(-1, 2)
-        area = abs(float(cv2.contourArea(polygon)))
-        area_ratio = area / image_area
-        if len(polygon) != 4 or area_ratio < min_area_ratio or area_ratio > max_area_ratio:
-            continue
-        normalized = [[round(float(x) / width, 6), round(float(y) / height, 6)] for x, y in polygon]
-        validation = validate_polygon(normalized)
-        if not validation["valid"]:
-            continue
+        x1, y1, x2, y2 = map(float, bbox[:4])
+        if x2 > x1 and y2 > y1:
+            conf = getattr(detection, "confidence", 0.85) if hasattr(detection, "confidence") else detection.get("confidence", 0.85)
+            class_name = getattr(detection, "class_name", "car") if hasattr(detection, "class_name") else detection.get("class_name", "car")
+            boxes.append({
+                "bbox": [x1, y1, x2, y2],
+                "confidence": float(conf or 0.85),
+                "class_name": str(class_name or "car"),
+            })
 
-        mask = np.zeros_like(gray)
-        cv2.fillPoly(mask, [polygon.astype(np.int32)], 255)
-        support = float(cv2.mean(gray, mask=mask)[0]) / 255.0
-        confidence = round(min(0.99, max(0.05, 0.55 * support + 0.45 * validation["geometry_score"])), 3)
-        candidates.append({
-            "polygon": normalized,
-            "confidence": confidence,
-            "source": "opencv_bright_geometry",
-            "evidence": {
-                "line_support": round(support, 3),
-                "geometry_score": validation["geometry_score"],
-                "area_ratio": round(area_ratio, 6),
-            },
-            "status": "NEEDS_REVIEW",
-        })
+    slanted_lines = _extract_slanted_lines(frame)
 
-    proposals = suppress_duplicate_proposals(candidates, duplicate_iou)
+    if len(boxes) < min_detections_per_row:
+        return propose_parking_spaces(frame)
+
+    # 1. Perspective Row Clustering
+    boxes.sort(key=lambda b: b["bbox"][3])
+    rows: list[list[dict[str, Any]]] = []
+
+    for b in boxes:
+        cy = b["bbox"][3]
+        matched_row: list[dict[str, Any]] | None = None
+        best_diff = 1e9
+
+        for r in rows:
+            row_y = float(np.median([item["bbox"][3] for item in r]))
+            row_h = float(np.median([item["bbox"][3] - item["bbox"][1] for item in r]))
+            tolerance = max(16.0, row_h * 0.35)
+            diff = abs(cy - row_y)
+            if diff <= tolerance and diff < best_diff:
+                best_diff = diff
+                matched_row = r
+
+        if matched_row is not None:
+            matched_row.append(b)
+        else:
+            rows.append([b])
+
+    valid_rows = [r for r in rows if len(r) >= min_detections_per_row]
+    valid_rows.sort(key=lambda r: float(np.median([item["bbox"][3] for item in r])))
+
+    proposals: list[dict[str, Any]] = []
+    row_letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    for row_idx, r in enumerate(valid_rows):
+        sec = row_letters[row_idx % len(row_letters)]
+        r.sort(key=lambda b: (b["bbox"][0] + b["bbox"][2]) / 2.0)
+
+        widths = [b["bbox"][2] - b["bbox"][0] for b in r]
+        heights = [b["bbox"][3] - b["bbox"][1] for b in r]
+        centers = [(b["bbox"][0] + b["bbox"][2]) / 2.0 for b in r]
+        bottoms = [b["bbox"][3] for b in r]
+
+        med_w = float(np.median(widths))
+        med_h = float(np.median(heights))
+        med_bot = float(np.median(bottoms))
+
+        stall_w = med_w * 1.15
+        stall_h = med_h * 1.25
+        y2 = med_bot
+        y1 = max(0.0, y2 - stall_h)
+        dy = y2 - y1
+
+        gaps = [centers[i + 1] - centers[i] for i in range(len(centers) - 1)]
+        normal_gaps = [g for g in gaps if 0.75 * med_w <= g <= 1.55 * med_w]
+        pitch = float(np.median(normal_gaps)) if normal_gaps else float(med_w * 1.18)
+
+        slot_centers: list[tuple[float, bool, dict[str, Any] | None]] = []
+
+        for i, b in enumerate(r):
+            cx = (b["bbox"][0] + b["bbox"][2]) / 2.0
+            slot_centers.append((cx, True, b))
+
+            if i < len(r) - 1:
+                next_cx = (r[i + 1]["bbox"][0] + r[i + 1]["bbox"][2]) / 2.0
+                gap = next_cx - cx
+                if gap >= 1.6 * pitch:
+                    num_empty = int(round(gap / pitch)) - 1
+                    step = gap / (num_empty + 1)
+                    for s in range(1, num_empty + 1):
+                        empty_cx = cx + s * step
+                        slot_centers.append((empty_cx, False, None))
+
+        slot_centers.sort(key=lambda item: item[0])
+
+        for slot_idx, (scx, is_occ, veh) in enumerate(slot_centers, start=1):
+            s = _get_perspective_slant(scx, y2, width, height, slanted_lines)
+            dx = s * dy
+
+            p1 = [round(max(0.0, min(float(width), scx - stall_w / 2.0 + dx)) / width, 6), round(y1 / height, 6)]
+            p2 = [round(max(0.0, min(float(width), scx + stall_w / 2.0 + dx)) / width, 6), round(y1 / height, 6)]
+            p3 = [round(max(0.0, min(float(width), scx + stall_w / 2.0)) / width, 6), round(y2 / height, 6)]
+            p4 = [round(max(0.0, min(float(width), scx - stall_w / 2.0)) / width, 6), round(y2 / height, 6)]
+
+            slot_id = f"{sec}{slot_idx:02d}"
+            confidence = round(float(veh["confidence"]) if veh else 0.88, 2)
+            evidence = "vehicle-row" if is_occ else "vehicle-gap"
+
+            proposals.append({
+                "slot_id": slot_id,
+                "section_id": sec,
+                "polygon": [p1, p2, p3, p4],
+                "type": "STANDARD",
+                "priority": 1,
+                "distance_from_entries": round(float((slot_idx * 3) + (row_idx * 10)), 2),
+                "confidence": confidence,
+                "evidence": evidence,
+                "status": "NEEDS_REVIEW",
+            })
+
     status = "PROPOSALS_FOUND" if proposals else "NO_PROPOSALS"
     return ParkingSpaceProposalResult(status, width, height, proposals)
+
+
+def infer_vehicle_slots(
+    frame: np.ndarray,
+    detections: list[Any],
+    *,
+    min_detections_per_row: int = 2,
+) -> list[dict[str, Any]]:
+    """Legacy alias returning just the proposal list for backwards compatibility."""
+    res = infer_parking_spaces(frame, detections, min_detections_per_row=min_detections_per_row)
+    return res.proposals
+
+
+def propose_parking_spaces(
+    frame: np.ndarray,
+    *,
+    min_area_ratio: float = 0.001,
+    max_area_ratio: float = 0.35,
+    duplicate_iou: float = 0.85,
+) -> ParkingSpaceProposalResult:
+    """Propose parking slots when vehicles are absent by extracting lane lines."""
+    if not isinstance(frame, np.ndarray) or frame.ndim not in (2, 3):
+        return ParkingSpaceProposalResult("NO_PROPOSALS", 0, 0, [])
+
+    height, width = frame.shape[:2]
+    if width < 1 or height < 1:
+        return ParkingSpaceProposalResult("NO_PROPOSALS", width, height, [])
+
+    slanted_lines = _extract_slanted_lines(frame)
+    proposals: list[dict[str, Any]] = []
+
+    # If no Hough lines from color masks, try basic edge/contour detection on gray
+    if len(slanted_lines) < 2:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 40, 120)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        image_area = float(width * height)
+        for c in contours:
+            peri = cv2.arcLength(c, True)
+            if peri > 30:
+                approx = cv2.approxPolyDP(c, 0.04 * peri, True).reshape(-1, 2)
+                area = abs(float(cv2.contourArea(approx)))
+                if len(approx) == 4 and min_area_ratio <= area / image_area <= max_area_ratio:
+                    normalized = [[round(float(x) / width, 6), round(float(y) / height, 6)] for x, y in approx]
+                    if validate_polygon(normalized)["valid"]:
+                        proposals.append({
+                            "slot_id": f"L{len(proposals) + 1:02d}",
+                            "section_id": "L",
+                            "polygon": normalized,
+                            "type": "STANDARD",
+                            "priority": 1,
+                            "distance_from_entries": (len(proposals) + 1) * 3,
+                            "confidence": 0.82,
+                            "evidence": "line-only",
+                            "status": "NEEDS_REVIEW",
+                        })
+        if proposals:
+            kept = suppress_duplicate_proposals(proposals, duplicate_iou)
+            return ParkingSpaceProposalResult("PROPOSALS_FOUND", width, height, kept)
+
+    # Group lines by approximate horizontal bottom location and height
+    slanted_lines.sort(key=lambda item: item[0])
+
+    for i in range(len(slanted_lines) - 1):
+        x1_bot, y1_bot, s1 = slanted_lines[i]
+        x2_bot, y2_bot, s2 = slanted_lines[i + 1]
+        span = x2_bot - x1_bot
+        if 25.0 <= span <= 220.0:
+            y_bot = max(y1_bot, y2_bot)
+            dy = max(60.0, float(height * 0.25))
+            y_top = max(0.0, y_bot - dy)
+            s_avg = (s1 + s2) / 2.0
+            dx = s_avg * dy
+
+            p1 = [round(max(0.0, x1_bot + dx) / width, 6), round(y_top / height, 6)]
+            p2 = [round(min(float(width), x2_bot + dx) / width, 6), round(y_top / height, 6)]
+            p3 = [round(min(float(width), x2_bot) / width, 6), round(y_bot / height, 6)]
+            p4 = [round(max(0.0, x1_bot) / width, 6), round(y_bot / height, 6)]
+
+            proposals.append({
+                "slot_id": f"L{len(proposals) + 1:02d}",
+                "section_id": "L",
+                "polygon": [p1, p2, p3, p4],
+                "type": "STANDARD",
+                "priority": 1,
+                "distance_from_entries": (len(proposals) + 1) * 3,
+                "confidence": 0.85,
+                "evidence": "line-only",
+                "status": "NEEDS_REVIEW",
+            })
+
+    kept = suppress_duplicate_proposals(proposals, duplicate_iou)
+    return ParkingSpaceProposalResult(
+        "PROPOSALS_FOUND" if kept else "NO_PROPOSALS",
+        width,
+        height,
+        kept,
+    )
 
 
 def validate_polygon(polygon: list[list[float]], *, min_area: float = 0.0001) -> dict[str, Any]:

@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     detect_tile_overlap: float = 0.20
     detect_fullframe: bool = False
     occupancy_votes: int = 3
-    calib_cycles: int = 40
-    calib_min_parked: int = 3
+    calib_cycles: int = 3
+    calib_min_parked: int = 2
     scene_check_interval_s: float = 30.0
 
     # Parking layout selection (without extension).
